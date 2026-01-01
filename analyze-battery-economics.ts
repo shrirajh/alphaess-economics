@@ -644,6 +644,9 @@ function calculateSolarDegradation(byYearSeason: Map<string, PeriodAnalysis>): S
       const d2 = yearData[i + 1];
       if (!d1 || !d2) continue;
 
+      // Skip comparison when baseline is effectively zero (avoids Infinity%)
+      if (d1.avgPV < 0.1) continue;
+
       const change = ((d2.avgPV - d1.avgPV) / d1.avgPV) * 100;
       periods.push({
         season,
@@ -1717,7 +1720,7 @@ function printBatteryUtilizationReport(analysis: Analysis): void {
   console.log(gridArbRow + gridArbValues.map(v => v.padStart(10)).join('') + ('$' + fmt(annualGridArbValue, 0) + '/yr').padStart(10));
 
   console.log('─'.repeat(95));
-  const totalRow = '  Total battery value    ';
+  const totalRow = '  Total battery value¹   ';
   let totalValues = seasonOrder.map(s => {
     const data = analysis.bySeason.get(s);
     if (!data || data.days === 0) return '--';
@@ -1731,6 +1734,8 @@ function printBatteryUtilizationReport(analysis: Analysis): void {
   });
   const annualTotalValue = annualSolarArbValue + annualGridArbValue;
   console.log(totalRow + totalValues.map(v => v.padStart(10)).join('') + ('$' + fmt(annualTotalValue, 0) + '/yr').padStart(10));
+  console.log('');
+  console.log('  ¹ Calculated from actual TOU discharge data (total ÷ days × 365)');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1739,6 +1744,7 @@ function printBatteryUtilizationReport(analysis: Analysis): void {
 
 interface OptimizationIssue {
   severity: 'high' | 'medium' | 'low';
+  category: 'config' | 'hardware';  // config = free settings change, hardware = requires purchase
   issue: string;
   impact: string;
   annualValue: number;
@@ -1762,7 +1768,14 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
 
   // Format peak hours, handling split periods (e.g., 6-10am AND 3pm-1am)
   function formatPeakHours(hours: number[]): string {
-    if (!hours || hours.length === 0) return 'check your tariff for peak hours';
+    if (!hours || hours.length === 0) {
+      // Try to get peak periods from tariff directly
+      const peakPeriods = getPeakPeriodsFromTariff();
+      if (peakPeriods.length > 0) {
+        return peakPeriods.map(p => `${p.start}-${p.end}`).join(' and ');
+      }
+      return '(peak hours not defined in tariff)';
+    }
 
     const sorted = [...hours].sort((a, b) => a - b);
     const ranges: string[] = [];
@@ -1854,6 +1867,7 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
 
       issues.push({
         severity: offpeakDischargePercent > 40 ? 'high' : 'medium',
+        category: 'config',
         issue: `Battery discharge timing: ${fmt(peakDischargePercent, 0)}% peak vs ${fmt(offpeakDischargePercent, 0)}% off-peak`,
         impact: `Discharging ${fmt(offpeakDischargeDaily, 1)} kWh/day during cheap off-peak while still importing ${fmt(peakImportDaily, 1)} kWh/day during expensive peak`,
         annualValue: redirectValue,
@@ -1864,6 +1878,7 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
       // Still worth noting as a potential future risk
       issues.push({
         severity: 'low',
+        category: 'config',
         issue: `Discharge time control is DISABLED (ctrDis=0)`,
         impact: `Battery performs OK now (${fmt(peakDischargePercent, 0)}% to peak) but settings aren't locked in - usage pattern changes could waste discharge`,
         annualValue: redirectValue > 0 ? redirectValue : 0,
@@ -1899,6 +1914,7 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
     if (annualWaste > 20) {
       issues.push({
         severity: peakChargePercent > 30 ? 'high' : 'medium',
+        category: 'config',
         issue: `Battery charging from grid during peak periods (${fmt(peakChargePercent, 0)}% of grid charging)`,
         impact: `Paying peak rate ($${fmt(peakRate, 2)}/kWh) instead of off-peak ($${fmt(offpeakRate, 2)}/kWh) to charge`,
         annualValue: annualWaste,
@@ -2075,6 +2091,7 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
 
       issues.push({
         severity: potentialCapture > 3 ? 'medium' : 'low',
+        category: 'hardware',
         issue: `Exporting ${fmt(avgExport, 1)} kWh/day while battery only captures ${fmt(avgSolarCharge, 1)} kWh/day from solar`,
         impact: `Could store more solar instead of exporting at low feed-in rate ($${fmt(feedInRate, 2)}/kWh)`,
         annualValue: annualValue,
@@ -2326,6 +2343,13 @@ function printOptimizationRecommendations(stats: Stats, analysis: Analysis, para
   const currentDischarge = system?.dischargeConfig ?? null;
   const currentCharge = system?.chargeConfig ?? null;
 
+  // Split issues by category
+  const configIssues = issues.filter(i => i.category === 'config');
+  const hardwareIssues = issues.filter(i => i.category === 'hardware');
+
+  const configTotal = configIssues.reduce((sum, i) => sum + i.annualValue, 0);
+  const hardwareTotal = hardwareIssues.reduce((sum, i) => sum + i.annualValue, 0);
+
   if (issues.length === 0) {
     console.log('\n✅ BATTERY OPTIMIZATION');
     console.log('═'.repeat(95));
@@ -2333,21 +2357,12 @@ function printOptimizationRecommendations(stats: Stats, analysis: Analysis, para
     return;
   }
 
-  const totalAnnualValue = issues.reduce((sum, i) => sum + i.annualValue, 0);
-
-  console.log('\n🔧 BATTERY OPTIMIZATION RECOMMENDATIONS');
-  console.log('═'.repeat(95));
-  console.log(`  Total potential savings from optimization: $${fmt(totalAnnualValue, 0)}/year`);
-  console.log('  (This is FREE money - no hardware purchase required!)\n');
-
-  for (let i = 0; i < issues.length; i++) {
-    const issue = issues[i];
-    if (!issue) continue;
-
+  // Helper to print a single issue
+  const printIssue = (issue: OptimizationIssue, index: number) => {
     const severityIcon = issue.severity === 'high' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🟢';
     const severityLabel = issue.severity.toUpperCase();
 
-    console.log(`  ${severityIcon} ISSUE ${i + 1}: ${issue.issue}`);
+    console.log(`  ${severityIcon} ISSUE ${index}: ${issue.issue}`);
     console.log(`     Severity: ${severityLabel} | Potential value: $${fmt(issue.annualValue, 0)}/year`);
     console.log(`     Impact: ${issue.impact}`);
     console.log('');
@@ -2389,25 +2404,69 @@ function printOptimizationRecommendations(stats: Stats, analysis: Analysis, para
     }
     console.log('');
     console.log('─'.repeat(95));
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CONFIG FIXES (FREE)
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (configIssues.length > 0) {
+    console.log('\n🔧 CONFIG FIXES (FREE - settings changes only)');
+    console.log('═'.repeat(95));
+    console.log(`  Total savings from config fixes: $${fmt(configTotal, 0)}/year`);
+    console.log('  (No hardware purchase required!)\n');
+
+    let issueNum = 1;
+    for (const issue of configIssues) {
+      printIssue(issue, issueNum++);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HARDWARE CONSIDERATIONS
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (hardwareIssues.length > 0) {
+    console.log('\n📦 HARDWARE CONSIDERATIONS (requires purchase)');
+    console.log('═'.repeat(95));
+
+    // Get the payback period from the first hardware issue if available
+    const scenarios = modelBatteryScenarios(analysis, params);
+    const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
+    const paybackYears = plusOneBattery ? plusOneBattery.paybackYears : 0;
+
+    console.log(`  Potential additional value: $${fmt(hardwareTotal, 0)}/year`);
+    if (paybackYears > 15) {
+      console.log(`  ⚠️  Payback period: ${fmt(paybackYears, 1)} years (exceeds battery lifespan)`);
+    } else if (paybackYears > 0) {
+      console.log(`  Payback period: ${fmt(paybackYears, 1)} years`);
+    }
+    console.log('');
+
+    let issueNum = 1;
+    for (const issue of hardwareIssues) {
+      printIssue(issue, issueNum++);
+    }
   }
 
   // Summary comparison
-  console.log('\n  💡 OPTIMIZATION vs NEW BATTERY COMPARISON');
+  console.log('\n  💡 SUMMARY');
   console.log('─'.repeat(95));
-  console.log(`     Fix current battery settings:  +$${fmt(totalAnnualValue, 0)}/year (FREE)`);
+  if (configTotal > 0) {
+    console.log(`     Config fixes (FREE):           +$${fmt(configTotal, 0)}/year`);
+  }
 
-  // Calculate what a new battery would add - use the same logic as modelBatteryScenarios
-  // Get the pre-calculated scenario value for consistency
+  // Calculate what a new battery would add
   const scenarios = modelBatteryScenarios(analysis, params);
   const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
   const newBatteryAnnual = plusOneBattery ? plusOneBattery.annualSavings : 0;
 
-  console.log(`     Buy additional ${BATTERY_SIZE_KWH}kWh battery:    +$${fmt(newBatteryAnnual, 0)}/year (costs $${BATTERY_COST})`);
+  if (hardwareTotal > 0 || newBatteryAnnual > 0) {
+    console.log(`     Additional ${BATTERY_SIZE_KWH}kWh battery:     +$${fmt(newBatteryAnnual, 0)}/year (costs $${BATTERY_COST})`);
+  }
   console.log('');
 
-  if (totalAnnualValue > newBatteryAnnual * 0.5) {
+  if (configTotal > 0 && configTotal > newBatteryAnnual * 0.5) {
     console.log('     ⚠️  RECOMMENDATION: Fix settings FIRST before considering new hardware!');
-    console.log('        The optimization savings are significant compared to new battery value.');
+    console.log('        The config fixes are free and significant.');
   }
 
   // Check for discharge timing issue and show backup power consideration
@@ -2438,7 +2497,11 @@ function printOptimizationRecommendations(stats: Stats, analysis: Analysis, para
 
   // Calculate actual carbon flows from their data
   const carbonAvgExport = analysis.overall.gridExport / analysis.overall.days;
-  const carbonAvgGridCharge = analysis.overall.chargeFromGrid / analysis.overall.days;
+  // Use gridChargeTOU for consistency with UTILIZATION section
+  const gridChargeTotal = (analysis.overall.gridChargeTOU.offpeak ?? 0) +
+                          (analysis.overall.gridChargeTOU.peak ?? 0) +
+                          (analysis.overall.gridChargeTOU.shoulder ?? 0);
+  const carbonAvgGridCharge = gridChargeTotal / analysis.overall.days;
   const carbonAvgSolarCharge = analysis.overall.chargeFromSolar / analysis.overall.days;
   const carbonAvgPeakImport = (analysis.overall.importByTOU.peak ?? 0) / analysis.overall.days;
   const carbonAvgOffpeakImport = (analysis.overall.importByTOU.offpeak ?? 0) / analysis.overall.days;
@@ -2600,6 +2663,20 @@ function main() {
     params.lifespanConfidence === 'medium' ? '~' : '⚠️';
   console.log(`  Estimated lifespan:          ${lifespanIcon} ${params.estimatedLifespanYears.toFixed(1)} years (${params.lifespanConfidence} confidence)`);
 
+  // Add explanation for confidence level
+  const yearsOfData = analysis.overall.days / 365;
+  if (params.lifespanConfidence === 'low') {
+    if (yearsOfData < 1) {
+      console.log(`                               ↳ Based on <1 year of degradation data`);
+    } else if (yearsOfData < 2) {
+      console.log(`                               ↳ Need 2+ years of data for medium confidence`);
+    } else {
+      console.log(`                               ↳ Insufficient efficiency history for estimate`);
+    }
+  } else if (params.lifespanConfidence === 'medium') {
+    console.log(`                               ↳ Based on ${yearsOfData.toFixed(1)} years of degradation data`);
+  }
+
   if (params.warnings.length > 0) {
     console.log('  Notes:');
     for (const warning of params.warnings) {
@@ -2703,15 +2780,23 @@ function main() {
   console.log('═'.repeat(85));
 
   if (analysis.batteryEfficiency.length > 0) {
-    console.log('  Period      Charged(kWh)  Discharged(kWh)  Efficiency   Cycles   Degradation');
+    console.log('  Period      Charged(kWh)  Discharged(kWh)  Efficiency   Cycles   Change');
     console.log('─'.repeat(85));
 
     const firstEfficiency = analysis.batteryEfficiency[0]?.efficiency ?? 0;
     for (const period of analysis.batteryEfficiency) {
-      const degradation = firstEfficiency > 0
-        ? ((firstEfficiency - period.efficiency) / firstEfficiency * 100)
+      // Calculate change from first period (positive = improvement, negative = degradation)
+      const change = firstEfficiency > 0
+        ? ((period.efficiency - firstEfficiency) / firstEfficiency * 100)
         : 0;
-      const degradationStr = degradation > 0 ? `-${fmt(degradation, 1)}%` : '--';
+      let changeStr: string;
+      if (Math.abs(change) < 0.5) {
+        changeStr = '--';
+      } else if (change > 0) {
+        changeStr = `+${fmt(change, 1)}%`;  // Efficiency improved (unusual)
+      } else {
+        changeStr = `${fmt(change, 1)}%`;   // Efficiency degraded (expected)
+      }
 
       console.log(
         '  ' + period.period.padEnd(12) +
@@ -2719,7 +2804,7 @@ function main() {
         pad(fmt(period.discharge, 0), 16) +
         pad(fmt(period.efficiency * 100, 1) + '%', 13) +
         pad(fmt(period.cycleCount, 0), 9) +
-        pad(degradationStr, 12)
+        pad(changeStr, 12)
       );
     }
 
@@ -2839,7 +2924,9 @@ function main() {
   console.log(`  Solar arbitrage (solar→peak):          $${fmt(savings.solarArbitrageValue, 0)} total | $${fmt(savings.solarArbitrageValue / years, 0)}/year (${fmt(solarArbPct, 0)}%)`);
   console.log(`  Grid arbitrage (offpeak→peak):         $${fmt(savings.gridArbitrageValue, 0)} total | $${fmt(savings.gridArbitrageValue / years, 0)}/year (${fmt(gridArbPct, 0)}%)`);
   console.log(`  ─────────────────────────────────────`);
-  console.log(`  Total battery value:                   $${fmt(totalBatteryValue, 0)} total | $${fmt(totalBatteryValue / years, 0)}/year`);
+  console.log(`  Total battery value²:                  $${fmt(totalBatteryValue, 0)} total | $${fmt(totalBatteryValue / years, 0)}/year`);
+  console.log('');
+  console.log('  ² Modeled day-by-day with efficiency losses applied');
 
   // Gap analysis
   if (savings.optimalGap > 0) {
