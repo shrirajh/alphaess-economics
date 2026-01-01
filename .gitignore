@@ -5,3 +5,5 @@ battery-*.json
 solar-report-*.html
 .env
 cache/
+recommended-config-*.json
+backups/
