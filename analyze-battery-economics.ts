@@ -928,15 +928,12 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
       // Available capacity for grid charging (after solar capture)
       const capacityForGridCharge = Math.max(0, additionalUsableKwh - solarCapturable);
 
-      // Grid charging is most valuable for morning peak (before solar)
-      // Can charge overnight (off-peak) to serve morning peak (6-10am)
-      const morningPeakTarget = hasTOUData ? day.morningPeakImport : day.gridImport * 0.70 * 0.29;
-
-      // Grid chargeable = min(remaining capacity, peak import remaining, morning peak target)
+      // Grid charging can serve ANY remaining peak demand (morning or afternoon)
+      // Charge overnight (off-peak) → discharge to peak periods
+      // Grid chargeable = min(remaining capacity, peak import remaining)
       const gridChargeable = Math.min(
         capacityForGridCharge,
-        peakImportRemaining / BATTERY_EFFICIENCY,
-        morningPeakTarget / BATTERY_EFFICIENCY
+        peakImportRemaining / BATTERY_EFFICIENCY
       );
 
       if (gridChargeable > 0) {
