@@ -1,0 +1,29 @@
+{
+  "name": "AGL Standard Retail Contract",
+  "provider": "AGL",
+  "state": "SA",
+  "dailySupplyCharge": 1.0561,
+  "feedInTariff": 0.02,
+  "dayTypes": {
+    "everyday": "MTWTFSS"
+  },
+  "periods": {
+    "everyday": [
+      {
+        "name": "peak",
+        "hours": [6, 7, 8, 9, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0],
+        "rate": 0.5146
+      },
+      {
+        "name": "shoulder",
+        "hours": [10, 11, 12, 13, 14],
+        "rate": 0.2365
+      },
+      {
+        "name": "offpeak",
+        "hours": [1, 2, 3, 4, 5],
+        "rate": 0.3345
+      }
+    ]
+  }
+}

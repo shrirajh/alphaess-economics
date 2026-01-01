@@ -19,6 +19,28 @@ if (!appID || !appSecret) {
   process.exit(1);
 }
 
+// Parse command line arguments for system filtering (supports partial match)
+function parseSnFilter(argPrefix: string): string[] | null {
+  const arg = process.argv.find(a => a.startsWith(argPrefix));
+  if (!arg) return null;
+  const value = arg.slice(argPrefix.length);
+  if (!value) return null;
+  return value.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+const skipPatterns = parseSnFilter('--skip=');
+const onlyPatterns = parseSnFilter('--only=');
+
+function matchesAny(sysSn: string, patterns: string[]): boolean {
+  return patterns.some(p => sysSn.includes(p));
+}
+
+function shouldProcessSystem(sysSn: string): boolean {
+  if (skipPatterns && matchesAny(sysSn, skipPatterns)) return false;
+  if (onlyPatterns && !matchesAny(sysSn, onlyPatterns)) return false;
+  return true;
+}
+
 const client = new AlphaESSClient({
   appID,
   appSecret,
@@ -106,8 +128,16 @@ async function dumpAllStats(): Promise<void> {
   console.log('🔌 Fetching AlphaESS system list...\n');
 
   try {
-    const systems = await client.getESSList();
-    console.log(`Found ${systems.length} system(s)\n`);
+    const allSystems = await client.getESSList();
+    type SystemInfo = GetESSListResponse[number];
+    const systems = allSystems.filter((s: SystemInfo) => shouldProcessSystem(s.sysSn));
+
+    console.log(`Found ${allSystems.length} system(s)`);
+    if (skipPatterns) console.log(`  Skipping (partial match): ${skipPatterns.join(', ')}`);
+    if (onlyPatterns) console.log(`  Only processing (partial match): ${onlyPatterns.join(', ')}`);
+    if (systems.length !== allSystems.length) {
+      console.log(`  Processing ${systems.length} of ${allSystems.length} systems`);
+    }
 
     for (const system of systems) {
       console.log(`\n📊 Processing system: ${system.sysSn}`);

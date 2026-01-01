@@ -1,0 +1,22 @@
+{
+  "name": "GloBird BOOST (VIC)",
+  "provider": "GloBird Energy",
+  "state": "VIC",
+  "feedInTariff": 0.03,
+  "feedInPeriods": {
+    "everyday": [
+      { "name": "peak-export", "hours": [16, 17, 18, 19, 20], "rate": 0.03 },
+      { "name": "shoulder-export", "hours": [21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 14, 15], "rate": 0.001 },
+      { "name": "midday-export", "hours": [10, 11, 12, 13], "rate": 0.00 }
+    ]
+  },
+  "dayTypes": {
+    "everyday": "MTWTFSS"
+  },
+  "periods": {
+    "everyday": [
+      { "name": "peak", "hours": [15, 16, 17, 18, 19, 20], "rate": 0.4389 },
+      { "name": "offpeak", "hours": [21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], "rate": 0.198 }
+    ]
+  }
+}

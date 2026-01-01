@@ -1,0 +1,17 @@
+{
+  "name": "Default TOU (NSW)",
+  "provider": "Generic",
+  "state": "NSW",
+  "feedInTariff": 0.06,
+  "dayTypes": {
+    "weekday": "MTWTFSS"
+  },
+  "periods": {
+    "weekday": [
+      { "name": "offpeak", "hours": [1, 2, 3, 4, 5], "rate": 0.3362 },
+      { "name": "peak", "hours": [6, 7, 8, 9], "rate": 0.4905 },
+      { "name": "shoulder", "hours": [10, 11, 12, 13, 14], "rate": 0.2875 },
+      { "name": "peak", "hours": [15, 16, 17, 18, 19, 20, 21, 22, 23, 0], "rate": 0.4905 }
+    ]
+  }
+}
