@@ -47,6 +47,10 @@ Open `report.html` in a browser and upload the generated `battery-analysis-*.jso
 </tr>
 </table>
 
+<img width="2551" height="1386" alt="image" src="https://github.com/user-attachments/assets/02443713-752f-4c16-95a9-813b2354e8fd" />
+<img width="2544" height="1385" alt="image" src="https://github.com/user-attachments/assets/74120aff-aafc-48ec-b930-b57e78e147d6" />
+
+
 ## Tariff Configuration
 
 Create `./tariffs/default.json` with your electricity rates. Example for a Victorian TOU plan:
