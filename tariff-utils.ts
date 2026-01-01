@@ -376,9 +376,22 @@ export function getSeason(month: number): SeasonName {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const COMPARISONS = {
-  // Energy equivalents
-  iphoneChargeKwh: 0.012,      // kWh per full charge
+  // Tech & Entertainment
+  iphoneChargeKwh: 0.018,      // kWh per full charge (iPhone 15 Pro)
+  netflixHoursPerKwh: 27,      // hours of streaming per kWh
+  spotifyStreamsPerKwh: 225,   // song streams per kWh
+  gamingHoursPerKwh: 45,       // gaming console hours per kWh
+
+  // Household appliances
   coffeeKwh: 0.1,              // kWh per cup (electric kettle)
+  laundryLoadsPerKwh: 0.43,    // washing machine loads per kWh
+  acMinutesPerKwh: 20,         // air conditioning minutes per kWh
+  hotShowersPerKwh: 0.4,       // hot showers per kWh (electric HWS)
+  toastSlicesPerKwh: 100,      // toast slices per kWh
+  hairdryerHoursPerKwh: 0.5,   // hairdryer hours per kWh
+  pizzasPerKwh: 0.5,           // pizza oven pizzas per kWh
+
+  // Legacy (kept for backward compat)
   tvYearKwh: 876,              // 100W × 24h × 365 days
   gamingPcYearKwh: 1752,       // 200W × 24h × 365 days
   avgHomeYearKwh: 7300,        // 20 kWh/day × 365
@@ -397,9 +410,21 @@ export function calculateComparisons(totalKwh: number) {
   const co2Avoided = totalKwh * COMPARISONS.co2PerKwhAvoided;
 
   return {
-    // Pop culture
+    // Tech & Entertainment
     iphones: Math.round(totalKwh / COMPARISONS.iphoneChargeKwh),
+    netflixHours: Math.round(totalKwh * COMPARISONS.netflixHoursPerKwh),
+    spotifyStreams: Math.round(totalKwh * COMPARISONS.spotifyStreamsPerKwh),
+    gamingHours: Math.round(totalKwh * COMPARISONS.gamingHoursPerKwh),
+
+    // Household
     coffees: Math.round(totalKwh / COMPARISONS.coffeeKwh),
+    laundryLoads: Math.round(totalKwh * COMPARISONS.laundryLoadsPerKwh),
+    acHours: (totalKwh * COMPARISONS.acMinutesPerKwh) / 60, // convert to hours
+    hotShowers: Math.round(totalKwh * COMPARISONS.hotShowersPerKwh),
+    toastSlices: Math.round(totalKwh * COMPARISONS.toastSlicesPerKwh),
+    pizzas: Math.round(totalKwh * COMPARISONS.pizzasPerKwh),
+
+    // Legacy
     tvYears: totalKwh / COMPARISONS.tvYearKwh,
     gamingPcYears: totalKwh / COMPARISONS.gamingPcYearKwh,
     homesYears: totalKwh / COMPARISONS.avgHomeYearKwh,

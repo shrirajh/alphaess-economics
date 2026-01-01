@@ -37,6 +37,65 @@ const RATES = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TEXT POOLS FOR RANDOM VARIETY
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TEXT_POOLS = {
+  hookOpeners: [
+    "This year, your roof worked hard.",
+    "Your solar panels didn't take a single day off.",
+    "While you were sleeping, your roof was earning.",
+    "Every sunny day, your panels were busy.",
+    "Rain or shine, your system kept going.",
+  ],
+  hookEmphasis: [
+    "Really hard.",
+    "Incredibly hard.",
+    "Like, seriously hard.",
+    "Non-stop.",
+    "Dawn to dusk.",
+  ],
+  generationIntros: [
+    "You captured",
+    "You harvested",
+    "You generated",
+    "Your panels produced",
+    "Your roof delivered",
+  ],
+  selfConsumptionPraise: [
+    "And you didn't waste it.",
+    "And you kept it for yourself.",
+    "Smart. Very smart.",
+    "That's efficiency.",
+  ],
+  savingsTeases: [
+    "So what did all this actually save you?",
+    "Now for the number you've been waiting for...",
+    "Time to talk money.",
+    "Let's count the savings.",
+  ],
+  celebratory: [
+    "Not bad for a roof.",
+    "Your roof is basically a power plant.",
+    "The sun paid you back.",
+    "That's solar working for you.",
+  ],
+};
+
+function pickRandom<T>(arr: readonly T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)]!;
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const result = [...arr];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j]!, result[i]!];
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS (copied from analyze-battery-economics.ts)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -674,12 +733,24 @@ interface YoYComparison {
 
 // Wacky comparisons
 interface WackyComparisons {
+  // Tech & Entertainment
   iphones: number;
+  netflixHours: number;
+  spotifyStreams: number;
+  gamingHours: number;
+  // Household
   coffees: number;
+  laundryLoads: number;
+  acHours: number;
+  hotShowers: number;
+  toastSlices: number;
+  pizzas: number;
+  // Legacy
   tvYears: number;
   gamingPcYears: number;
   homesYears: number;
   evKm: number;
+  // Environmental
   co2Avoided: number;
   treesEquivalent: number;
   carsOffRoad: number;
@@ -869,7 +940,7 @@ function createSavingsComparisonChart(data: ReportData): object {
     encoding: {
       x: { field: 'scenario', type: 'nominal', axis: { labelColor: '#B3B3B3', titleColor: '#B3B3B3', labelAngle: 0 }, sort: { field: 'order' }, title: null },
       y: { field: 'cost', type: 'quantitative', axis: { labelColor: '#B3B3B3', titleColor: '#B3B3B3', format: '$,.0f', gridColor: '#333' }, title: 'Total Cost' },
-      color: { field: 'scenario', type: 'nominal', scale: { domain: ['No Solar', 'Solar Only', 'Solar + Battery'], range: ['#9B59B6', '#F7DC6F', '#1DB954'] }, legend: null },
+      color: { field: 'scenario', type: 'nominal', scale: { domain: ['No Solar', 'Solar Only', 'Solar + Battery'], range: ['#FF6B35', '#FFE205', '#1DB954'] }, legend: null },
       tooltip: [
         { field: 'scenario', type: 'nominal', title: 'Scenario' },
         { field: 'cost', type: 'quantitative', title: 'Total Cost', format: '$,.0f' }
@@ -897,7 +968,7 @@ function createTOUDonutChart(data: ReportData, type: 'import' | 'export'): objec
     mark: { type: 'arc', innerRadius: 50, cornerRadius: 4 },
     encoding: {
       theta: { field: 'value', type: 'quantitative', stack: true },
-      color: { field: 'period', type: 'nominal', scale: { domain: ['Peak', 'Shoulder', 'Off-peak'], range: ['#FF6B35', '#F7DC6F', '#4ECDC4'] }, legend: { labelColor: '#B3B3B3', titleColor: '#B3B3B3' } },
+      color: { field: 'period', type: 'nominal', scale: { domain: ['Peak', 'Shoulder', 'Off-peak'], range: ['#FF6B35', '#FFE205', '#1DB954'] }, legend: { labelColor: '#B3B3B3', titleColor: '#B3B3B3' } },
       tooltip: [
         { field: 'period', type: 'nominal', title: 'Period' },
         { field: 'value', type: 'quantitative', title: 'kWh', format: '.1f' },
@@ -1025,7 +1096,7 @@ function createDailyProfileChart(data: ReportData): object {
         encoding: {
           x: { field: 'hour', type: 'quantitative', axis: { labelColor: '#B3B3B3', titleColor: '#B3B3B3', values: [0, 6, 10, 15, 24] }, title: 'Hour of Day', scale: { domain: [0, 23] } },
           y: { field: 'value', type: 'quantitative', axis: { labelColor: '#B3B3B3', titleColor: '#B3B3B3', gridColor: '#333' }, title: 'Power (kW)' },
-          color: { field: 'type', type: 'nominal', scale: { domain: ['Solar', 'Load', 'Grid'], range: ['#1DB954', '#FF6B35', '#9B59B6'] }, legend: { labelColor: '#B3B3B3', titleColor: '#B3B3B3' } },
+          color: { field: 'type', type: 'nominal', scale: { domain: ['Solar', 'Load', 'Grid'], range: ['#1DB954', '#FF6B35', '#22A7F0'] }, legend: { labelColor: '#B3B3B3', titleColor: '#B3B3B3' } },
           tooltip: [
             { field: 'hour', type: 'quantitative', title: 'Hour' },
             { field: 'type', type: 'nominal', title: 'Type' },
@@ -1087,7 +1158,7 @@ function createBatterySVG(level: number, size = 80): string {
   const w = size;
   const h = size * 1.6;
   const fillHeight = (level / 100) * (h - 20);
-  const color = level > 60 ? '#1DB954' : level > 30 ? '#F7DC6F' : '#E74C3C';
+  const color = level > 60 ? '#1DB954' : level > 30 ? '#FFE205' : '#E74C3C';
 
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" class="battery-icon">
     <defs>
@@ -1121,7 +1192,7 @@ function createEnergyFlowSVG(selfConsumption: number, size = 200): string {
       </linearGradient>
       <linearGradient id="flowGrid" x1="0%" y1="0%" x2="100%" y2="0%">
         <stop offset="0%" stop-color="#FFD93D"/>
-        <stop offset="100%" stop-color="#9B59B6"/>
+        <stop offset="100%" stop-color="#22A7F0"/>
       </linearGradient>
     </defs>
     <!-- Sun -->
@@ -1130,14 +1201,14 @@ function createEnergyFlowSVG(selfConsumption: number, size = 200): string {
     <path d="M160 50 L175 35 L190 50 L190 75 L160 75 Z" fill="none" stroke="#1DB954" stroke-width="2"/>
     <rect x="170" y="60" width="10" height="15" fill="#1DB954"/>
     <!-- Grid icon -->
-    <path d="M160 95 L175 85 L190 95 L190 115 L160 115 Z" fill="none" stroke="#9B59B6" stroke-width="2"/>
+    <path d="M160 95 L175 85 L190 95 L190 115 L160 115 Z" fill="none" stroke="#22A7F0" stroke-width="2"/>
     <!-- Flow to home -->
     <path d="M55 55 Q100 40 155 50" fill="none" stroke="url(#flowHome)" stroke-width="${homeThickness}" stroke-linecap="round" class="flow-line flow-home"/>
     <!-- Flow to grid -->
     <path d="M55 65 Q100 80 155 95" fill="none" stroke="url(#flowGrid)" stroke-width="${gridThickness}" stroke-linecap="round" class="flow-line flow-grid"/>
     <!-- Labels -->
     <text x="100" y="32" text-anchor="middle" fill="#1DB954" font-size="11" font-weight="600">${selfConsumption.toFixed(0)}% home</text>
-    <text x="100" y="108" text-anchor="middle" fill="#9B59B6" font-size="11" font-weight="600">${exported.toFixed(0)}% grid</text>
+    <text x="100" y="108" text-anchor="middle" fill="#22A7F0" font-size="11" font-weight="600">${exported.toFixed(0)}% grid</text>
   </svg>`;
 }
 
@@ -1202,7 +1273,7 @@ function createSeasonBarsSVG(seasons: { name: string; value: number }[], width =
 
   const max = Math.max(...seasons.map(s => s.value));
   const barWidth = (width - 20) / seasons.length - 8;
-  const colors: Record<string, string> = { summer: '#FFD93D', autumn: '#E67E22', winter: '#3498DB', spring: '#2ECC71' };
+  const colors: Record<string, string> = { summer: '#FFE205', autumn: '#FF6B35', winter: '#22A7F0', spring: '#1DB954' };
 
   const bars = seasons.map((s, i) => {
     const barHeight = (s.value / max) * (height - 20);
@@ -1229,33 +1300,287 @@ function createYoYDeltaSVG(delta: number, direction: 'up' | 'down' | 'same'): st
   return `<span class="yoy-delta ${direction}" style="color: ${color}; font-weight: 600;">${arrow} ${sign}${delta.toFixed(1)}%</span>`;
 }
 
-// Format wacky comparison
-function formatWackyComparison(comparisons: WackyComparisons): { icon: string; text: string }[] {
-  const results: { icon: string; text: string }[] = [];
+// Pulsing roof outline with solar panels
+function createRoofSVG(size = 200): string {
+  const w = size;
+  const h = size * 0.6;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 200 120" class="roof-outline">
+    <defs>
+      <linearGradient id="roofGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#1DB954" stop-opacity="0.8"/>
+        <stop offset="100%" stop-color="#22A7F0" stop-opacity="0.6"/>
+      </linearGradient>
+    </defs>
+    <!-- House base -->
+    <rect x="40" y="60" width="120" height="50" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="2"/>
+    <!-- Roof -->
+    <path d="M30 60 L100 15 L170 60" fill="none" stroke="url(#roofGlow)" stroke-width="3" stroke-linecap="round"/>
+    <!-- Solar panels on roof -->
+    <g class="solar-panels">
+      <rect x="55" y="30" width="25" height="18" rx="2" fill="#22A7F0" opacity="0.7"/>
+      <rect x="85" y="30" width="25" height="18" rx="2" fill="#22A7F0" opacity="0.7"/>
+      <rect x="115" y="30" width="25" height="18" rx="2" fill="#22A7F0" opacity="0.7"/>
+      <!-- Panel grid lines -->
+      <line x1="67.5" y1="30" x2="67.5" y2="48" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+      <line x1="97.5" y1="30" x2="97.5" y2="48" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+      <line x1="127.5" y1="30" x2="127.5" y2="48" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+    </g>
+    <!-- Door -->
+    <rect x="85" y="80" width="30" height="30" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5"/>
+    <!-- Windows -->
+    <rect x="50" y="75" width="20" height="20" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5"/>
+    <rect x="130" y="75" width="20" height="20" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5"/>
+  </svg>`;
+}
 
-  // Pop culture
-  if (comparisons.iphones > 1000) {
-    results.push({ icon: '📱', text: formatComparison(comparisons.iphones, 'iPhone charge') });
-  }
-  if (comparisons.coffees > 100) {
-    results.push({ icon: '☕', text: formatComparison(comparisons.coffees, 'cup', 'cups') + ' of coffee' });
-  }
-  if (comparisons.evKm > 1000) {
-    results.push({ icon: '🚗', text: formatComparison(comparisons.evKm, 'km') + ' in an EV' });
+// Floating particles container (money, energy, leaves)
+function createParticleContainerHTML(type: 'money' | 'energy' | 'leaves', count = 8): string {
+  const particles: Record<string, string[]> = {
+    money: ['💵', '💰', '💸', '$'],
+    energy: ['⚡', '✨', '☀️', '💡'],
+    leaves: ['🌿', '🍃', '🌱', '🌳'],
+  };
+  const icons = particles[type] ?? particles.energy!;
+
+  const items = Array.from({ length: count }, (_, i) => {
+    const icon = icons[i % icons.length];
+    const left = 10 + Math.random() * 80; // 10-90% from left
+    const delay = Math.random() * 2; // 0-2s delay
+    const duration = 2.5 + Math.random() * 1.5; // 2.5-4s duration
+    const size = 0.8 + Math.random() * 0.6; // 0.8-1.4 scale
+    return `<span class="particle" style="left: ${left}%; --delay: ${delay.toFixed(1)}s; --duration: ${duration.toFixed(1)}s; font-size: ${size}em;">${icon}</span>`;
+  });
+
+  return `<div class="particle-container">${items.join('')}</div>`;
+}
+
+// House icons grid (for context slide - homes powered)
+function createHouseGridSVG(totalHomes: number, width = 200, height = 80): string {
+  const displayHomes = Math.min(Math.ceil(totalHomes), 12); // Cap at 12 icons
+  const cols = Math.min(displayHomes, 6);
+  const rows = Math.ceil(displayHomes / cols);
+  const cellW = width / cols;
+  const cellH = height / rows;
+  const iconSize = Math.min(cellW, cellH) * 0.6;
+
+  const houses = Array.from({ length: displayHomes }, (_, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cx = col * cellW + cellW / 2;
+    const cy = row * cellH + cellH / 2;
+    const halfSize = iconSize / 2;
+    // Simple house shape
+    return `<g class="house-icon" style="animation-delay: ${i * 0.1}s;">
+      <path d="M${cx - halfSize} ${cy + halfSize * 0.3} L${cx} ${cy - halfSize * 0.5} L${cx + halfSize} ${cy + halfSize * 0.3} L${cx + halfSize} ${cy + halfSize} L${cx - halfSize} ${cy + halfSize} Z"
+        fill="#1DB954" opacity="0.8"/>
+    </g>`;
+  });
+
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="house-grid">${houses.join('')}</svg>`;
+}
+
+// Savings stacked bar (solar vs battery contribution)
+function createSavingsBarSVG(solarAmount: number, batteryAmount: number, width = 280, height = 40): string {
+  const total = solarAmount + batteryAmount;
+  const solarPct = (solarAmount / total) * 100;
+  const batteryPct = (batteryAmount / total) * 100;
+  const barHeight = 24;
+  const barY = (height - barHeight) / 2;
+  const solarWidth = (solarPct / 100) * (width - 20);
+  const batteryWidth = (batteryPct / 100) * (width - 20);
+
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="savings-bar">
+    <defs>
+      <linearGradient id="solarGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#1DB954"/>
+        <stop offset="100%" stop-color="#1DB954"/>
+      </linearGradient>
+      <linearGradient id="batteryGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#22A7F0"/>
+        <stop offset="100%" stop-color="#22A7F0"/>
+      </linearGradient>
+    </defs>
+    <!-- Background track -->
+    <rect x="10" y="${barY}" width="${width - 20}" height="${barHeight}" rx="${barHeight / 2}" fill="rgba(255,255,255,0.1)"/>
+    <!-- Solar portion -->
+    <rect x="10" y="${barY}" width="${solarWidth}" height="${barHeight}" rx="${barHeight / 2}" fill="url(#solarGrad)" class="bar-fill" style="--target-width: ${solarWidth}px;"/>
+    <!-- Battery portion -->
+    <rect x="${10 + solarWidth}" y="${barY}" width="${batteryWidth}" height="${barHeight}" rx="0 ${barHeight / 2} ${barHeight / 2} 0" fill="url(#batteryGrad)" class="bar-fill" style="--target-width: ${batteryWidth}px; animation-delay: 0.3s;"/>
+    <!-- Labels -->
+    <text x="${10 + solarWidth / 2}" y="${barY + barHeight / 2 + 4}" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">${solarPct.toFixed(0)}%</text>
+    <text x="${10 + solarWidth + batteryWidth / 2}" y="${barY + barHeight / 2 + 4}" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">${batteryPct.toFixed(0)}%</text>
+  </svg>
+  <div style="display: flex; justify-content: center; gap: 1.5rem; margin-top: 0.5rem; font-size: 0.85rem;">
+    <span style="color: #1DB954;">● Solar</span>
+    <span style="color: #22A7F0;">● Battery</span>
+  </div>`;
+}
+
+// Cost comparison bars (you vs grid-only)
+function createCostComparisonSVG(yourCost: number, gridCost: number, width = 300, height = 100): string {
+  const maxCost = Math.max(yourCost, gridCost);
+  const yourWidth = (yourCost / maxCost) * (width - 100);
+  const gridWidth = (gridCost / maxCost) * (width - 100);
+  const barHeight = 28;
+  const savings = gridCost - yourCost;
+
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="cost-comparison">
+    <!-- Your cost bar -->
+    <text x="0" y="22" fill="#E0E0E0" font-size="12">You</text>
+    <rect x="45" y="8" width="${yourWidth}" height="${barHeight}" rx="4" fill="#1DB954" class="bar-fill" style="--target-width: ${yourWidth}px;"/>
+    <text x="${50 + yourWidth + 5}" y="28" fill="#1DB954" font-size="14" font-weight="700">$${yourCost.toFixed(0)}</text>
+
+    <!-- Grid cost bar -->
+    <text x="0" y="62" fill="#E0E0E0" font-size="12">Grid</text>
+    <rect x="45" y="48" width="${gridWidth}" height="${barHeight}" rx="4" fill="#E74C3C" class="bar-fill" style="--target-width: ${gridWidth}px; animation-delay: 0.2s;"/>
+    <text x="${50 + gridWidth + 5}" y="68" fill="#E74C3C" font-size="14" font-weight="700">$${gridCost.toFixed(0)}</text>
+
+    <!-- Savings arrow -->
+    <line x1="${45 + yourWidth + 5}" y1="36" x2="${45 + yourWidth + 5}" y2="48" stroke="#FFE205" stroke-width="2" stroke-dasharray="3,2"/>
+    <text x="${width / 2}" y="95" text-anchor="middle" fill="#FFE205" font-size="13" font-weight="600">↓ $${savings.toFixed(0)} saved/day</text>
+  </svg>`;
+}
+
+// Clock face showing peak hours avoided
+function createPeakClockSVG(peakHoursAvoided: number, size = 120): string {
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = (size - 20) / 2;
+
+  // Peak hours: 6-10am and 3pm-midnight (15-24, 0-1)
+  const peakSegments = [
+    { start: 6, end: 10 },   // Morning peak
+    { start: 15, end: 24 },  // Evening peak
+  ];
+
+  const segments = peakSegments.map(seg => {
+    const startAngle = ((seg.start / 24) * 360 - 90) * (Math.PI / 180);
+    const endAngle = ((seg.end / 24) * 360 - 90) * (Math.PI / 180);
+    const x1 = cx + r * Math.cos(startAngle);
+    const y1 = cy + r * Math.sin(startAngle);
+    const x2 = cx + r * Math.cos(endAngle);
+    const y2 = cy + r * Math.sin(endAngle);
+    const largeArc = (seg.end - seg.start) > 12 ? 1 : 0;
+    return `<path d="M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${largeArc},1 ${x2},${y2} Z" fill="#FF6B35" opacity="0.3"/>`;
+  });
+
+  // Hour markers
+  const markers = Array.from({ length: 12 }, (_, i) => {
+    const angle = ((i / 12) * 360 - 90) * (Math.PI / 180);
+    const x1 = cx + (r - 5) * Math.cos(angle);
+    const y1 = cy + (r - 5) * Math.sin(angle);
+    const x2 = cx + r * Math.cos(angle);
+    const y2 = cy + r * Math.sin(angle);
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>`;
+  });
+
+  const hoursText = peakHoursAvoided > 0 ? `${peakHoursAvoided.toLocaleString()} kWh` : 'Peak';
+
+  return `<svg width="${size}" height="${size + 24}" viewBox="0 0 ${size} ${size + 24}" class="peak-clock">
+    <!-- Clock face -->
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="2"/>
+    <!-- Peak hour segments -->
+    ${segments.join('')}
+    <!-- Hour markers -->
+    ${markers.join('')}
+    <!-- Center dot -->
+    <circle cx="${cx}" cy="${cy}" r="4" fill="#1DB954"/>
+    <!-- Clock hands (static) -->
+    <line x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy - r * 0.6}" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+    <line x1="${cx}" y1="${cy}" x2="${cx + r * 0.4}" y2="${cy}" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Label -->
+    <text x="${cx}" y="${size + 16}" text-anchor="middle" fill="#FF6B35" font-size="12" font-weight="600">${hoursText} shifted</text>
+  </svg>`;
+}
+
+// Battery stack (current + potential additional batteries)
+function createBatteryStackSVG(currentCount: number, additionalSavings: number[], size = 60): string {
+  const totalBatteries = currentCount + additionalSavings.length;
+  const spacing = 5;
+  const batteryHeight = size * 1.2;
+  const batteryWidth = size * 0.7;
+  const totalWidth = totalBatteries * (batteryWidth + spacing);
+
+  const batteries = [];
+  for (let i = 0; i < totalBatteries; i++) {
+    const isCurrent = i < currentCount;
+    const x = i * (batteryWidth + spacing);
+    const opacity = isCurrent ? 1 : 0.4;
+    const fill = isCurrent ? '#1DB954' : '#22A7F0';
+    const strokeDash = isCurrent ? '' : '4,2';
+
+    batteries.push(`
+      <g transform="translate(${x}, 0)" opacity="${opacity}">
+        <!-- Battery cap -->
+        <rect x="${batteryWidth * 0.25}" y="0" width="${batteryWidth * 0.5}" height="6" rx="2" fill="rgba(255,255,255,0.3)"/>
+        <!-- Battery body -->
+        <rect x="2" y="8" width="${batteryWidth - 4}" height="${batteryHeight - 12}" rx="6"
+          fill="none" stroke="${fill}" stroke-width="2" ${strokeDash ? `stroke-dasharray="${strokeDash}"` : ''}/>
+        <!-- Fill -->
+        <rect x="5" y="${batteryHeight * 0.3}" width="${batteryWidth - 10}" height="${batteryHeight * 0.6}" rx="4" fill="${fill}" opacity="0.6"/>
+        ${!isCurrent && additionalSavings[i - currentCount] ? `
+          <text x="${batteryWidth / 2}" y="${batteryHeight + 15}" text-anchor="middle" fill="#FFE205" font-size="10" font-weight="600">
+            +$${Math.round(additionalSavings[i - currentCount] ?? 0)}/yr
+          </text>
+        ` : ''}
+      </g>
+    `);
   }
 
+  return `<svg width="${totalWidth}" height="${batteryHeight + 25}" viewBox="0 0 ${totalWidth} ${batteryHeight + 25}" class="battery-stack">
+    ${batteries.join('')}
+  </svg>`;
+}
+
+// Trophy icon for best season
+function createTrophySVG(size = 40): string {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 40 40" class="trophy-icon">
+    <path d="M20 5 L25 15 L35 15 L27 22 L30 32 L20 26 L10 32 L13 22 L5 15 L15 15 Z"
+      fill="#FFE205" stroke="#FF9F1C" stroke-width="1"/>
+  </svg>`;
+}
+
+// Wacky comparison options with thresholds
+interface WackyOption {
+  key: keyof WackyComparisons;
+  icon: string;
+  format: (value: number) => string;
+  min: number;
+}
+
+const WACKY_OPTIONS: WackyOption[] = [
+  // Tech & Entertainment
+  { key: 'iphones', icon: '📱', format: v => formatComparison(v, 'iPhone charge'), min: 1000 },
+  { key: 'netflixHours', icon: '📺', format: v => formatComparison(v, 'hour') + ' of Netflix', min: 100 },
+  { key: 'spotifyStreams', icon: '🎵', format: v => formatComparison(v, 'Spotify stream'), min: 500 },
+  { key: 'gamingHours', icon: '🎮', format: v => formatComparison(v, 'hour') + ' of gaming', min: 100 },
+  // Household
+  { key: 'coffees', icon: '☕', format: v => formatComparison(v, 'cup', 'cups') + ' of coffee', min: 100 },
+  { key: 'laundryLoads', icon: '👕', format: v => formatComparison(v, 'laundry load'), min: 50 },
+  { key: 'acHours', icon: '❄️', format: v => formatComparison(v, 'hour') + ' of AC', min: 10 },
+  { key: 'hotShowers', icon: '🚿', format: v => formatComparison(v, 'hot shower'), min: 20 },
+  { key: 'toastSlices', icon: '🍞', format: v => formatComparison(v, 'slice', 'slices') + ' of toast', min: 100 },
+  { key: 'pizzas', icon: '🍕', format: v => formatComparison(v, 'homemade pizza'), min: 10 },
+  // Transport
+  { key: 'evKm', icon: '🚗', format: v => formatComparison(v, 'km') + ' in an EV', min: 1000 },
   // Environmental
-  if (comparisons.treesEquivalent > 10) {
-    results.push({ icon: '🌳', text: 'Like planting ' + formatComparison(comparisons.treesEquivalent, 'tree') });
-  }
-  if (comparisons.co2Avoided > 100) {
-    results.push({ icon: '🌍', text: formatComparison(comparisons.co2Avoided, 'kg') + ' CO₂ avoided' });
-  }
-  if (comparisons.flightsSydBali >= 1) {
-    results.push({ icon: '✈️', text: formatComparison(comparisons.flightsSydBali, 'return flight') + ' to Bali offset' });
-  }
+  { key: 'treesEquivalent', icon: '🌳', format: v => 'Like planting ' + formatComparison(v, 'tree'), min: 10 },
+  { key: 'co2Avoided', icon: '🌍', format: v => formatComparison(v, 'kg') + ' CO₂ avoided', min: 100 },
+  { key: 'flightsSydBali', icon: '✈️', format: v => formatComparison(v, 'flight') + ' to Bali offset', min: 1 },
+];
 
-  return results;
+// Format wacky comparison - returns randomized selection
+function formatWackyComparison(comparisons: WackyComparisons, count = 6): { icon: string; text: string }[] {
+  // Filter to comparisons that pass threshold
+  const valid = WACKY_OPTIONS.filter(opt => comparisons[opt.key] >= opt.min);
+
+  // Shuffle and take up to `count` items
+  const selected = shuffle(valid).slice(0, count);
+
+  return selected.map(opt => ({
+    icon: opt.icon,
+    text: opt.format(comparisons[opt.key])
+  }));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1295,6 +1620,26 @@ function generateHTML(data: ReportData): string {
     data.bySeason.map(s => ({ name: s.season, value: s.data.avgDaily.pvGeneration })),
     160, 50
   );
+
+  // New graphics for visual overhaul
+  const roofSvg = createRoofSVG(180);
+  const energyParticles = createParticleContainerHTML('energy', 10);
+  const moneyParticles = createParticleContainerHTML('money', 8);
+  const homesPowered = Math.floor(data.totalGenerated / 7300); // avg home uses 7300 kWh/year
+  const houseGridSvg = createHouseGridSVG(Math.min(12, homesPowered + 4), Math.min(12, homesPowered));
+  const savingsBarHtml = createSavingsBarSVG(data.savings.savingsFromSolar, data.savings.savingsFromBattery);
+  const costComparisonHtml = createCostComparisonSVG(dailyCostActual, dailyCostWithoutSolar);
+  const peakClockSvg = createPeakClockSVG(Math.round(data.savings.savingsFromBattery / (RATES.peak - RATES.offpeak)));
+  const batteryStackHtml = createBatteryStackSVG(1, data.scenarios.slice(0, 2).map(s => s.annualSavings));
+  const trophySvg = createTrophySVG(32);
+
+  // Random text selections
+  const hookOpener = pickRandom(TEXT_POOLS.hookOpeners);
+  const hookEmphasis = pickRandom(TEXT_POOLS.hookEmphasis);
+  const generationIntro = pickRandom(TEXT_POOLS.generationIntros);
+  const selfConsumptionPraise = pickRandom(TEXT_POOLS.selfConsumptionPraise);
+  const savingsTease = pickRandom(TEXT_POOLS.savingsTeases);
+  const celebratory = pickRandom(TEXT_POOLS.celebratory);
 
   // YoY indicators
   const genYoY = data.yoy ? createYoYDeltaSVG(data.yoy.generation.delta, data.yoy.generation.direction) : '';
@@ -1777,6 +2122,255 @@ function generateHTML(data: ReportData): string {
       50% { opacity: 0.6; }
     }
 
+    /* Floating particles animation */
+    .particle-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    .particle {
+      position: absolute;
+      animation: floatUp var(--duration, 3s) ease-out infinite;
+      animation-delay: var(--delay, 0s);
+      opacity: 0;
+      font-size: 1.5rem;
+    }
+
+    @keyframes floatUp {
+      0% { opacity: 0; transform: translateY(0) scale(0.5); }
+      15% { opacity: 1; }
+      85% { opacity: 0.8; }
+      100% { opacity: 0; transform: translateY(-150px) scale(1.2); }
+    }
+
+    /* Hero number shimmer glow */
+    .hero-number.shimmer {
+      animation: shimmer 3s ease-in-out infinite;
+    }
+
+    @keyframes shimmer {
+      0%, 100% { text-shadow: 0 4px 30px rgba(0,0,0,0.3); }
+      50% { text-shadow: 0 4px 30px rgba(0,0,0,0.3), 0 0 60px rgba(29,185,84,0.5); }
+    }
+
+    /* Staggered cascade entry for lists */
+    .cascade > * {
+      opacity: 0;
+      transform: translateX(-20px);
+      animation: cascadeIn 0.5s ease-out forwards;
+    }
+    .cascade > *:nth-child(1) { animation-delay: 0.1s; }
+    .cascade > *:nth-child(2) { animation-delay: 0.2s; }
+    .cascade > *:nth-child(3) { animation-delay: 0.3s; }
+    .cascade > *:nth-child(4) { animation-delay: 0.4s; }
+    .cascade > *:nth-child(5) { animation-delay: 0.5s; }
+    .cascade > *:nth-child(6) { animation-delay: 0.6s; }
+
+    @keyframes cascadeIn {
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    /* Bar grow animation */
+    .bar-fill {
+      width: 0;
+      animation: barGrow 1s ease-out 0.3s forwards;
+    }
+
+    @keyframes barGrow {
+      to { width: var(--target-width, 100%); }
+    }
+
+    /* Pulsing glow on roof SVG */
+    .roof-outline {
+      filter: drop-shadow(0 0 10px rgba(29,185,84,0.3));
+      animation: roofPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes roofPulse {
+      0%, 100% { filter: drop-shadow(0 0 10px rgba(29,185,84,0.3)); }
+      50% { filter: drop-shadow(0 0 30px rgba(29,185,84,0.7)); }
+    }
+
+    /* Split screen layout */
+    .split-layout {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 1.5rem;
+      align-items: center;
+      max-width: 500px;
+      margin: 1.5rem auto;
+    }
+
+    .split-divider {
+      width: 2px;
+      height: 80px;
+      background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.3), transparent);
+    }
+
+    .split-left, .split-right {
+      text-align: center;
+    }
+
+    /* Floating card style */
+    .floating-card {
+      background: rgba(255,255,255,0.05);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 20px 28px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    /* Asymmetric offset positioning */
+    .offset-left { transform: translateX(-20px); }
+    .offset-right { transform: translateX(20px); }
+
+    /* Wacky comparison carousel/chips */
+    .wacky-carousel {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 450px;
+      margin: 1.5rem auto;
+    }
+
+    .wacky-chip {
+      background: rgba(255,255,255,0.08);
+      padding: 10px 18px;
+      border-radius: 24px;
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      backdrop-filter: blur(5px);
+      border: 1px solid rgba(255,255,255,0.12);
+      transition: transform 0.2s, background 0.2s;
+    }
+
+    .wacky-chip:hover {
+      transform: scale(1.05);
+      background: rgba(255,255,255,0.12);
+    }
+
+    /* Inline mini-chart containers */
+    .mini-chart {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 1rem 0;
+    }
+
+    /* Trophy/badge styling */
+    .trophy-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: linear-gradient(135deg, rgba(255,215,0,0.2), rgba(255,165,0,0.1));
+      padding: 8px 16px;
+      border-radius: 20px;
+      border: 1px solid rgba(255,215,0,0.3);
+    }
+
+    /* Clock face styling */
+    .clock-container {
+      position: relative;
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* Battery stack styling */
+    .battery-stack {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-end;
+      margin: 1rem 0;
+    }
+
+    .battery-ghost {
+      opacity: 0.4;
+      filter: grayscale(0.5);
+    }
+
+    /* Stacked bar chart */
+    .stacked-bar {
+      display: flex;
+      width: 100%;
+      max-width: 300px;
+      height: 40px;
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 1rem auto;
+    }
+
+    .stacked-segment {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: white;
+      transition: width 1s ease-out;
+    }
+
+    /* Cost comparison bars */
+    .cost-bars {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      width: 100%;
+      max-width: 350px;
+      margin: 1rem auto;
+    }
+
+    .cost-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .cost-bar-label {
+      width: 60px;
+      font-size: 0.8rem;
+      text-align: right;
+      opacity: 0.8;
+    }
+
+    .cost-bar-track {
+      flex: 1;
+      height: 28px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .cost-bar-fill {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      border-radius: 6px;
+      transition: width 1s ease-out;
+    }
+
+    .cost-bar-fill.you {
+      background: linear-gradient(90deg, #1DB954, #22A7F0);
+    }
+
+    .cost-bar-fill.grid {
+      background: linear-gradient(90deg, #FF6B35, #E74C3C);
+    }
+
     /* Visual layout helpers */
     .visual-row {
       display: flex;
@@ -1840,12 +2434,13 @@ function generateHTML(data: ReportData): string {
        SLIDE 1: TITLE
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-intro" data-slide="0">
+    ${energyParticles}
     <div class="fade-in">
       ${sunSvg}
     </div>
     <div class="fade-in delay-1">
       <div class="headline">Your Solar Story</div>
-      <div class="hero-number" style="font-size: clamp(3rem, 12vw, 8rem);">${yearRange}</div>
+      <div class="hero-number shimmer" style="font-size: clamp(3rem, 12vw, 8rem);">${yearRange}</div>
     </div>
     <div class="scroll-hint fade-in delay-2">Scroll to begin ↓</div>
   </section>
@@ -1855,10 +2450,13 @@ function generateHTML(data: ReportData): string {
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-hook" data-slide="1">
     <div class="fade-in">
-      <div class="headline">This year, your roof worked hard.</div>
+      ${roofSvg}
     </div>
     <div class="fade-in delay-1">
-      <div class="hero-unit" style="font-size: clamp(2rem, 6vw, 4rem); font-weight: 600; margin-top: 1rem;">Really hard.</div>
+      <div class="headline">${hookOpener}</div>
+    </div>
+    <div class="fade-in delay-2">
+      <div class="hero-unit" style="font-size: clamp(2rem, 6vw, 4rem); font-weight: 600; margin-top: 1rem;">${hookEmphasis}</div>
     </div>
   </section>
 
@@ -1867,20 +2465,20 @@ function generateHTML(data: ReportData): string {
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-generation" data-slide="2" data-panel="generation">
     <div class="fade-in">
-      <div class="headline">You captured</div>
+      <div class="headline">${generationIntro}</div>
     </div>
     <div class="fade-in delay-1 visual-row">
       <div class="visual-col">
-        <div class="hero-number count-up" data-value="${Math.round(data.totalGenerated)}">${f(data.totalGenerated, 0)}</div>
+        <div class="hero-number shimmer count-up" data-value="${Math.round(data.totalGenerated)}">${f(data.totalGenerated, 0)}</div>
         <div class="hero-unit">kWh ${genYoY}</div>
       </div>
     </div>
     <div class="fade-in delay-2">
       ${sparklineSvg}
-      <div class="subtext" style="margin-top: 0.5rem;">of pure sunshine (last 30 days trend)</div>
+      <div class="subtext" style="margin-top: 0.5rem;">of pure sunshine</div>
     </div>
-    <div class="wacky-comparisons fade-in delay-3">
-      ${wackyComps.slice(0, 3).map(c => `<div class="wacky-item">${c.icon} ${c.text}</div>`).join('')}
+    <div class="wacky-carousel cascade fade-in delay-3">
+      ${wackyComps.slice(0, 6).map(c => `<div class="wacky-chip">${c.icon} <span>${c.text}</span></div>`).join('')}
     </div>
     <button class="explore-btn fade-in delay-3" onclick="openPanel('generation')">Explore details ↑</button>
   </section>
@@ -1890,14 +2488,17 @@ function generateHTML(data: ReportData): string {
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-context" data-slide="3">
     <div class="fade-in">
-      <div class="headline">That's enough to power<br>the average home for</div>
+      <div class="headline">That's enough to power</div>
     </div>
-    <div class="fade-in delay-1">
-      <div class="hero-number count-up" data-value="${yearsOfPower.toFixed(1)}">${f(yearsOfPower, 1)}</div>
-      <div class="hero-unit">years</div>
+    <div class="fade-in delay-1 mini-chart">
+      ${houseGridSvg}
     </div>
     <div class="fade-in delay-2">
-      <div class="subtext">or drive an EV ${f(evKm, 0)} km</div>
+      <div class="hero-number count-up" data-value="${yearsOfPower.toFixed(1)}">${f(yearsOfPower, 1)}</div>
+      <div class="hero-unit">years of an average home</div>
+    </div>
+    <div class="fade-in delay-3">
+      <div class="subtext" style="margin-top: 1rem;">or drive an EV ${f(evKm, 0).toLocaleString()} km 🚗</div>
     </div>
   </section>
 
@@ -1906,18 +2507,23 @@ function generateHTML(data: ReportData): string {
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-self" data-slide="4" data-panel="selfconsumption">
     <div class="fade-in">
-      <div class="headline">And you didn't waste it.</div>
+      <div class="headline">${selfConsumptionPraise}</div>
     </div>
     <div class="fade-in delay-1 visual-row">
       ${donutSvg}
       <div class="visual-col">
-        <div class="hero-number count-up" data-value="${data.selfConsumptionRate.toFixed(1)}">${f(data.selfConsumptionRate, 1)}%</div>
+        <div class="hero-number shimmer count-up" data-value="${data.selfConsumptionRate.toFixed(1)}">${f(data.selfConsumptionRate, 1)}%</div>
         <div class="hero-unit">kept at home ${selfConsYoY}</div>
       </div>
     </div>
     <div class="fade-in delay-2">
       ${energyFlowSvg}
-      <div class="subtext" style="margin-top: 0.5rem;">(most homes only manage 30-40%)</div>
+    </div>
+    <div class="fade-in delay-3">
+      <div class="floating-card" style="margin-top: 1rem;">
+        <div class="subtext">Most homes only manage 30-40%</div>
+        <div class="subtext" style="color: #1DB954; margin-top: 0.5rem;">You're in the top ${Math.max(1, Math.round(100 - data.selfConsumptionRate))}% of solar users</div>
+      </div>
     </div>
     <button class="explore-btn fade-in delay-3" onclick="openPanel('selfconsumption')">Explore details ↑</button>
   </section>
@@ -1947,8 +2553,12 @@ function generateHTML(data: ReportData): string {
        SLIDE 7: SAVINGS TEASE
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-tease" data-slide="6">
+    ${moneyParticles}
     <div class="fade-in">
-      <div class="headline">So what did all this<br>actually save you?</div>
+      <div class="headline" style="font-size: clamp(1.5rem, 5vw, 2.5rem);">${savingsTease}</div>
+    </div>
+    <div class="fade-in delay-1" style="margin-top: 2rem;">
+      <div class="scroll-hint">↓</div>
     </div>
   </section>
 
@@ -1957,24 +2567,17 @@ function generateHTML(data: ReportData): string {
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-savings" data-slide="7" data-panel="savings">
     <div class="fade-in">
-      <div class="hero-number count-up" data-value="${Math.round(data.savings.totalSavings)}">${money(data.savings.totalSavings)}</div>
+      <div class="hero-number shimmer count-up" data-value="${Math.round(data.savings.totalSavings)}">${money(data.savings.totalSavings)}</div>
       <div class="hero-unit">${savingsYoY}</div>
     </div>
     <div class="fade-in delay-1">
-      <div class="subtext">saved vs. buying everything from the grid</div>
+      <div class="subtext">${celebratory}</div>
     </div>
-    <div class="fade-in delay-2" style="display: flex; gap: 2rem; margin-top: 2rem; flex-wrap: wrap; justify-content: center;">
-      <div style="text-align: center; background: rgba(29,185,84,0.15); padding: 16px 24px; border-radius: 12px;">
-        <div style="font-size: 1.5rem; font-weight: 600; color: #1DB954;">${money(data.savings.savingsFromSolar)}</div>
-        <div style="opacity: 0.7; font-size: 0.9rem;">from Solar</div>
-      </div>
-      <div style="text-align: center; background: rgba(52,152,219,0.15); padding: 16px 24px; border-radius: 12px;">
-        <div style="font-size: 1.5rem; font-weight: 600; color: #3498DB;">${money(data.savings.savingsFromBattery)}</div>
-        <div style="opacity: 0.7; font-size: 0.9rem;">from Battery</div>
-      </div>
+    <div class="fade-in delay-2">
+      ${savingsBarHtml}
     </div>
-    <div class="wacky-comparisons fade-in delay-3">
-      ${wackyComps.slice(3, 6).map(c => `<div class="wacky-item">${c.icon} ${c.text}</div>`).join('')}
+    <div class="wacky-carousel cascade fade-in delay-3">
+      ${wackyComps.slice(6, 10).map(c => `<div class="wacky-chip">${c.icon} <span>${c.text}</span></div>`).join('')}
     </div>
     <button class="explore-btn fade-in delay-3" onclick="openPanel('savings')">Explore details ↑</button>
   </section>
@@ -1987,11 +2590,13 @@ function generateHTML(data: ReportData): string {
       <div class="headline">Your average electricity cost?</div>
     </div>
     <div class="fade-in delay-1">
-      <div class="hero-number count-up" data-value="${dailyCostActual.toFixed(2)}">${money(dailyCostActual)}</div>
-      <div class="hero-unit">per day</div>
+      ${costComparisonHtml}
     </div>
     <div class="fade-in delay-2">
-      <div class="subtext">vs ${money(dailyCostWithoutSolar)} without solar</div>
+      <div class="floating-card">
+        <div class="hero-number" style="font-size: 2rem; color: #1DB954;">${money(dailyCostWithoutSolar - dailyCostActual)}</div>
+        <div class="subtext">saved per day</div>
+      </div>
     </div>
     <button class="explore-btn fade-in delay-3" onclick="openPanel('daily')">Explore details ↑</button>
   </section>
@@ -2001,17 +2606,20 @@ function generateHTML(data: ReportData): string {
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-season" data-slide="9" data-panel="seasonal">
     <div class="fade-in">
-      <div class="headline">${bestSeason ? bestSeason.season.charAt(0).toUpperCase() + bestSeason.season.slice(1) : 'Summer'} was your superstar</div>
+      <div class="trophy-badge">
+        ${trophySvg}
+        <span>${bestSeason ? bestSeason.season.charAt(0).toUpperCase() + bestSeason.season.slice(1) : 'Summer'}</span>
+      </div>
+      <div class="headline" style="margin-top: 1rem;">was your superstar season</div>
     </div>
     <div class="fade-in delay-1 visual-row">
       <div class="visual-col">
-        <div class="hero-number count-up" data-value="${bestSeason?.data.avgDaily.pvGeneration ?? 0}">${f(bestSeason?.data.avgDaily.pvGeneration ?? 0, 1)}</div>
+        <div class="hero-number shimmer count-up" data-value="${bestSeason?.data.avgDaily.pvGeneration ?? 0}">${f(bestSeason?.data.avgDaily.pvGeneration ?? 0, 1)}</div>
         <div class="hero-unit">kWh/day avg</div>
       </div>
     </div>
     <div class="fade-in delay-2">
       ${seasonBars}
-      <div class="subtext" style="margin-top: 0.5rem;">Generation by season</div>
     </div>
     <button class="explore-btn fade-in delay-3" onclick="openPanel('seasonal')">See all seasons ↑</button>
   </section>
@@ -2023,11 +2631,15 @@ function generateHTML(data: ReportData): string {
     <div class="fade-in">
       <div class="headline">You dodged the peak rates.</div>
     </div>
-    <div class="fade-in delay-1">
-      <div class="hero-number count-up" data-value="${Math.round(peakAvoided)}">${money(peakAvoided)}</div>
+    <div class="fade-in delay-1 mini-chart">
+      ${peakClockSvg}
     </div>
     <div class="fade-in delay-2">
-      <div class="subtext">avoided at $${RATES.peak.toFixed(2)}/kWh<br>by using stored solar instead</div>
+      <div class="hero-number shimmer count-up" data-value="${Math.round(peakAvoided)}">${money(peakAvoided)}</div>
+      <div class="hero-unit">avoided at peak rates</div>
+    </div>
+    <div class="fade-in delay-3">
+      <div class="subtext">Using stored solar at $${RATES.peak.toFixed(2)}/kWh hours</div>
     </div>
     <button class="explore-btn fade-in delay-3" onclick="openPanel('tou')">Explore details ↑</button>
   </section>
@@ -2039,12 +2651,17 @@ function generateHTML(data: ReportData): string {
     <div class="fade-in">
       <div class="headline">What if you added<br>another battery?</div>
     </div>
-    <div class="fade-in delay-1">
-      <div class="hero-number">${bestScenario ? '+' + money(bestScenario.annualSavings) : '+$0'}</div>
-      <div class="hero-unit">per year</div>
+    <div class="fade-in delay-1 mini-chart">
+      ${batteryStackHtml}
     </div>
     <div class="fade-in delay-2">
-      <div class="subtext">${bestScenario && bestScenario.paybackYears < 50 ? f(bestScenario.paybackYears, 0) + ' year payback' : 'probably not worth it'}</div>
+      <div class="hero-number shimmer">${bestScenario ? '+' + money(bestScenario.annualSavings) : '+$0'}</div>
+      <div class="hero-unit">per year</div>
+    </div>
+    <div class="fade-in delay-3">
+      <div class="floating-card">
+        <div class="subtext">${bestScenario && bestScenario.paybackYears < 50 ? f(bestScenario.paybackYears, 0) + ' year payback' : 'Probably not worth it at current prices'}</div>
+      </div>
     </div>
     <button class="explore-btn fade-in delay-3" onclick="openPanel('scenarios')">Explore scenarios ↑</button>
   </section>
@@ -2053,34 +2670,36 @@ function generateHTML(data: ReportData): string {
        SLIDE 13: SUMMARY
        ═══════════════════════════════════════════════════════════════════════ -->
   <section class="slide theme-summary" data-slide="12" data-panel="summary">
+    ${energyParticles}
     <div class="fade-in">
       ${sunSvg}
-      <div class="headline" style="margin-top: 0.5rem;">Your Solar Wrapped ${yearRange}</div>
+      <div class="headline shimmer" style="margin-top: 0.5rem;">Your Solar Wrapped ${yearRange}</div>
     </div>
-    <div class="summary-grid fade-in delay-1">
-      <div class="summary-item">
+    <div class="summary-grid cascade fade-in delay-1">
+      <div class="summary-item floating-card">
         <div class="icon">☀️</div>
         <div class="value">${f(data.totalGenerated, 0)}</div>
         <div class="label">kWh generated</div>
       </div>
-      <div class="summary-item">
+      <div class="summary-item floating-card">
         <div class="icon">🔋</div>
         <div class="value">${f(totalCycles, 0)}</div>
         <div class="label">battery cycles</div>
       </div>
-      <div class="summary-item">
+      <div class="summary-item floating-card">
         <div class="icon">💰</div>
         <div class="value">${money(data.savings.totalSavings)}</div>
         <div class="label">saved</div>
       </div>
-      <div class="summary-item">
+      <div class="summary-item floating-card">
         <div class="icon">📊</div>
         <div class="value">${f(data.selfConsumptionRate, 1)}%</div>
         <div class="label">self-consumed</div>
       </div>
     </div>
-    <div class="comparison-strip fade-in delay-2">
-      🌳 ${f(data.comparisons.treesEquivalent, 0)} trees | 🌍 ${f(data.comparisons.co2Avoided, 0)} kg CO₂ | ☕ ${f(data.comparisons.coffees, 0)} coffees
+    <div class="wacky-carousel fade-in delay-2" style="margin-top: 1rem;">
+      <div class="wacky-chip">🌳 <span>${f(data.comparisons.treesEquivalent, 0)} trees planted</span></div>
+      <div class="wacky-chip">🌍 <span>${f(data.comparisons.co2Avoided, 0)} kg CO₂ avoided</span></div>
     </div>
     <button class="explore-btn fade-in delay-2" onclick="openPanel('summary')">Full breakdown ↑</button>
     <div class="fade-in delay-3" style="margin-top: 1rem; opacity: 0.5; font-size: 0.8rem;">
@@ -2128,8 +2747,8 @@ function generateHTML(data: ReportData): string {
           <div style="font-size: 2rem; font-weight: 700; color: #1DB954;">${f(data.selfConsumptionRate, 1)}%</div>
           <div style="opacity: 0.8;">Used at Home</div>
         </div>
-        <div style="flex: 1; min-width: 150px; background: rgba(155,89,182,0.15); padding: 20px; border-radius: 12px; text-align: center;">
-          <div style="font-size: 2rem; font-weight: 700; color: #9B59B6;">${f(100 - data.selfConsumptionRate, 1)}%</div>
+        <div style="flex: 1; min-width: 150px; background: rgba(34,167,240,0.15); padding: 20px; border-radius: 12px; text-align: center;">
+          <div style="font-size: 2rem; font-weight: 700; color: #22A7F0;">${f(100 - data.selfConsumptionRate, 1)}%</div>
           <div style="opacity: 0.8;">Exported</div>
         </div>
       </div>
