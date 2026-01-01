@@ -1,49 +1,55 @@
 # AlphaESS Battery Economics Toolkit
 
-A command-line toolkit for AlphaESS battery owners who want to understand their system's performance, optimize charge/discharge schedules, and compare electricity plans.
+Figure out if your battery is saving you money, find a cheaper electricity plan, and optimize your charge/discharge schedule.
 
-## What it does
-
-This toolkit pulls historical data from your AlphaESS system and answers questions like:
-
-- How much money is my battery actually saving me?
-- Am I discharging during the right time periods?
-- Would a second battery pay for itself?
-- Is there a cheaper electricity plan I should switch to?
-
-It also lets you apply optimized charge/discharge schedules based on your tariff's peak periods.
-
-## Screenshots
-
-### Web Report
-<img width="1051" height="1384" alt="image" src="https://github.com/user-attachments/assets/5b998dc6-e249-4f5e-859a-b2bf40443cdc" />
-<img width="1049" height="1222" alt="image" src="https://github.com/user-attachments/assets/a26a806c-e846-4f27-8be6-8d152a633146" />
-<img width="1021" height="1362" alt="image" src="https://github.com/user-attachments/assets/1d681897-6d73-4f23-970f-40af18962f51" />
-
-### CLI Script
-<img width="1416" height="976" alt="image" src="https://github.com/user-attachments/assets/9e5c49f9-33c2-4f78-b639-30c143bb37cd" />
-<img width="1427" height="1298" alt="image" src="https://github.com/user-attachments/assets/82b8fb7d-e70b-48b4-a0cf-ef6d3a02fad5" />
-<img width="1866" height="1257" alt="image" src="https://github.com/user-attachments/assets/80d3bac8-c0ae-4cd0-aa87-5fe23926fcfd" />
-<img width="1448" height="1275" alt="image" src="https://github.com/user-attachments/assets/1dcfcbdf-cca3-4305-8460-4e8d38873c25" />
-
-## Setup
-
-You'll need Node.js 18+ and an AlphaESS Open API account.
+## Quick Start
 
 ```bash
 npm install
 ```
 
-Create a `.env` file:
+Create `.env` with your [AlphaESS Open API](https://open.alphaess.com/) credentials:
 
 ```
 ALPHAESS_APP_ID=your_app_id
 ALPHAESS_APP_SECRET=your_app_secret
 ```
 
-Get your API credentials from the AlphaESS Open API portal. These are different from your regular app login.
+Fetch your data and run analysis:
 
-Create a tariff file at `./tariffs/default.json`. Here's an example for a Victorian TOU plan:
+```bash
+npx tsx dump-stats.ts
+npx tsx analyze-battery-economics.ts
+```
+
+Open `report.html` in a browser and upload the generated `battery-analysis-*.json` to view your report.
+
+## View Reports
+
+**Detailed report** - Open `report.html`, upload your `battery-analysis-*.json`. Interactive charts, printable to PDF.
+
+**Solar Wrapped** (just for fun) - Run `npx tsx generate-charts.ts` for a Spotify Wrapped-style slideshow of your year in solar. Shareable HTML.
+
+## Screenshots
+
+<table>
+<tr>
+<td><img width="400" alt="Web Report" src="https://github.com/user-attachments/assets/5b998dc6-e249-4f5e-859a-b2bf40443cdc" /></td>
+<td><img width="400" alt="Web Report" src="https://github.com/user-attachments/assets/a26a806c-e846-4f27-8be6-8d152a633146" /></td>
+</tr>
+<tr>
+<td><img width="400" alt="Web Report" src="https://github.com/user-attachments/assets/1d681897-6d73-4f23-970f-40af18962f51" /></td>
+<td><img width="400" alt="CLI Output" src="https://github.com/user-attachments/assets/9e5c49f9-33c2-4f78-b639-30c143bb37cd" /></td>
+</tr>
+<tr>
+<td><img width="400" alt="CLI Output" src="https://github.com/user-attachments/assets/82b8fb7d-e70b-48b4-a0cf-ef6d3a02fad5" /></td>
+<td><img width="400" alt="CLI Output" src="https://github.com/user-attachments/assets/80d3bac8-c0ae-4cd0-aa87-5fe23926fcfd" /></td>
+</tr>
+</table>
+
+## Tariff Configuration
+
+Create `./tariffs/default.json` with your electricity rates. Example for a Victorian TOU plan:
 
 ```json
 {
@@ -69,255 +75,84 @@ Or use the tariff scraper to generate one automatically from your retailer's pub
 
 ## Commands
 
-### Fetch your data
+### dump-stats.ts
 
 ```bash
 npx tsx dump-stats.ts
 ```
 
-Pulls all available historical data from your AlphaESS system. On first run this takes a while (it fetches up to 5 years of daily data). Subsequent runs only fetch new days.
+Fetches historical data. First run takes a while (up to 5 years). Later runs only fetch new days.
 
-If you have multiple systems, use `--only=SERIAL` or `--skip=SERIAL` to filter.
+Options: `--only=SERIAL` or `--skip=SERIAL` to filter systems.
 
-### Analyze battery economics
+### analyze-battery-economics.ts
 
 ```bash
 npx tsx analyze-battery-economics.ts
 ```
 
-The main analysis tool. It shows:
+Runs the analysis and outputs `battery-analysis-*.json`. Shows seasonal patterns, TOU breakdown, battery utilization, savings vs no-battery/no-solar, ROI scenarios, and optimization recommendations.
 
-- Seasonal generation and consumption patterns
-- Time-of-use breakdown (when you're importing/exporting)
-- Battery utilization (is it discharging during peak or wasting cycles on off-peak?)
-- Retrospective savings (what you saved vs no battery, vs no solar)
-- ROI scenarios for adding more battery capacity
-- Optimization recommendations with estimated dollar value
-
-Example output:
-
-```
-🔧 BATTERY OPTIMIZATION RECOMMENDATIONS
-═══════════════════════════════════════════════════════════════════════════════════════════════════════
-  Total potential savings from optimization: $247/year
-  (This is FREE money - no hardware purchase required!)
-
-  🔴 ISSUE 1: Battery discharge timing: 71% peak vs 24% off-peak
-     Severity: HIGH | Potential value: $247/year
-     Impact: Discharging 2.3 kWh/day during cheap off-peak while still importing 3.1 kWh/day during expensive peak
-```
-
-### Calculate your bill
+### calculate-bill.ts
 
 ```bash
 npx tsx calculate-bill.ts
-```
-
-Shows what your electricity bill would be based on actual usage data. Useful for checking against your retailer's bill.
-
-Compare two tariffs:
-
-```bash
 npx tsx calculate-bill.ts --tariff=./tariffs/current.json --tariff=./tariffs/new-plan.json
 ```
 
-## Fetching tariffs from Australian retailers
+Calculates your bill from usage data. Pass multiple `--tariff` flags to compare plans.
 
-Australian energy retailers are required to publish their plans through the Consumer Data Right (CDR) API. This toolkit can fetch those plans directly and convert them into tariff JSON files.
+## Tariff Scraper (Australia)
 
-### Scraper configuration
-
-Create `scraper-config.json`:
-
-```json
-{
-  "filters": {
-    "fuelType": "ELECTRICITY",
-    "customerType": "RESIDENTIAL"
-  },
-  "cache": {
-    "enabled": true,
-    "ttlHours": 24,
-    "directory": "./cache",
-    "endpointsFile": "./cache/cdr-endpoints.json"
-  },
-  "output": {
-    "directory": "./tariffs"
-  }
-}
-```
-
-### Discover available retailers
+Australian retailers publish plans via the Consumer Data Right (CDR) API. The scraper fetches these and converts them to tariff JSON.
 
 ```bash
-npx tsx tariff-scraper.ts discover
+npx tsx tariff-scraper.ts discover                    # Find retailers
+npx tsx tariff-scraper.ts fetch --all                 # Fetch all plans (slow, polite)
+npx tsx tariff-scraper.ts fetch --retailer=globird    # Fetch one retailer
+npx tsx tariff-scraper.ts list --retailer=globird     # List cached plans
+npx tsx tariff-scraper.ts convert --retailer=globird --plan-id=GBI12345E  # Save as tariff JSON
 ```
 
-Queries the Energy Made Easy register to find all retailers with CDR endpoints. Results are cached to `./cache/cdr-endpoints.json`.
+Options: `--force` to refresh cache, `--limit=10` for first N retailers.
 
-Example output:
-
-```
-Found 45 retailers:
-
-Code                Name                          Status
-------------------------------------------------------------
-agl                 AGL                           active
-origin              Origin Energy                 active
-energyaustralia     EnergyAustralia              active
-globird             GloBird Energy               active
-...
-```
-
-### Fetch plan lists
-
-Fetch plans from a single retailer:
-
-```bash
-npx tsx tariff-scraper.ts fetch --retailer=globird
-```
-
-Fetch from all retailers (polite mode with 5-second delays):
-
-```bash
-npx tsx tariff-scraper.ts fetch --all
-```
-
-This caches plan summaries to `./cache/plans-{retailer}.json`. Plans include metadata like which postcodes they're available in, but not the actual rates yet.
-
-Use `--force` to refresh cached data, or `--limit=10` to only fetch from the first N retailers.
-
-### List cached plans
-
-```bash
-npx tsx tariff-scraper.ts list --retailer=globird
-```
-
-Shows all plans from a retailer that are in your cache:
-
-```
-Plans from GloBird Energy (fetched: 2025-01-15T10:30:00.000Z):
-
-Plan ID                  Name                                    Type
---------------------------------------------------------------------------------
-GBI12345E                EasyFlat                                STANDING
-GBI12346E                EasySaver                               MARKET
-GBI12347E                Solar Plus TOU                          MARKET
-...
-```
-
-### View raw plan details
-
-```bash
-npx tsx tariff-scraper.ts info --retailer=globird --plan-id=GBI12345E
-```
-
-Fetches and displays the full CDR plan detail JSON. Useful for debugging or understanding what data is available.
-
-### Convert a plan to tariff JSON
-
-```bash
-npx tsx tariff-scraper.ts convert --retailer=globird --plan-id=GBI12345E
-```
-
-Fetches the plan details from the CDR API and converts them into the tariff JSON format used by the other tools. The output includes:
-
-- Daily supply charge
-- Time-of-use rates with hour mappings
-- Feed-in tariffs (flat or TOU)
-- Day type patterns (weekday/weekend if applicable)
-
-Output:
-
-```
-Fetching plan GBI12345E from GloBird Energy...
-
-Tariff saved to: ./tariffs/globird-solar-plus-tou-vic.json
-
-Tariff Summary:
-  Name: Solar Plus TOU (VIC)
-  Provider: GloBird Energy
-  State: VIC
-  Daily Supply: $1.0274/day
-  Feed-in: $0.0500/kWh
-
-  Periods:
-    everyday (MTWTFSS):
-      peak: $0.3520/kWh (hours: 14)
-      shoulder: $0.1980/kWh (hours: 5)
-      offpeak: $0.1650/kWh (hours: 5)
-```
-
-### Compare plans against your usage
-
-Once you've fetched plan data, compare all available plans for your postcode:
+### compare-plans.ts
 
 ```bash
 npx tsx compare-plans.ts --postcode=3000 --top=10
 ```
 
-This calculates what each plan would actually cost based on your historical usage data, including TOU patterns. Results are ranked by net cost:
+Ranks plans by actual cost using your usage data. Options: `--save` to save top plans as JSON, `--exclude-conditions` to skip plans with special requirements.
 
-```
-TOP 10 CHEAPEST PLANS FOR POSTCODE 3000
-════════════════════════════════════════════════════════════════════════════════
-Based on 365 days of actual usage data
-
-  #  Plan                               Retailer             Net Cost      Annual
-----------------------------------------------------------------------------------
-  1  Solar Saver TOU                    GloBird Energy        $847.23   $847/yr
-  2  Simply Plus                        Simply Energy         $892.45   $892/yr
-  3  Freedom Plus                       Powershop             $901.12   $901/yr
-...
-```
-
-Options:
-
-- `--current=./tariffs/current.json` - compare against your current plan
-- `--save` - save the top N plans as tariff JSON files
-- `--output=./tariffs` - directory for saved tariffs
-- `--exclude-conditions` - skip plans requiring memberships, new customer status, etc.
-
-### Workflow example
-
-Find a cheaper plan:
+### Workflow: find a cheaper plan
 
 ```bash
-# 1. Make sure you have usage data
 npx tsx dump-stats.ts
-
-# 2. Discover and fetch retailer plans
 npx tsx tariff-scraper.ts discover
 npx tsx tariff-scraper.ts fetch --all
-
-# 3. Compare plans for your postcode
 npx tsx compare-plans.ts --postcode=3000 --top=10 --save
-
-# 4. Run a detailed bill comparison with the top result
-npx tsx calculate-bill.ts \
-  --tariff=./tariffs/default.json \
-  --tariff=./tariffs/globird-solar-saver-tou-vic.json
+npx tsx calculate-bill.ts --tariff=./tariffs/default.json --tariff=./tariffs/globird-solar-saver-tou-vic.json
 ```
 
-## Optimize battery settings
+## Battery Settings
 
-After running the analysis, it generates a recommended config file:
+### optimize-battery.ts
 
 ```bash
 npx tsx optimize-battery.ts --config=./recommended-config-YOURSERIAL.json
 ```
 
-This updates your AlphaESS discharge schedule to prioritize peak periods. Use `--dry-run` to see what would change without applying it.
+Applies the recommended discharge schedule. Use `--dry-run` to preview. Note: AlphaESS only allows one settings change per 24 hours.
 
-**Warning:** AlphaESS only allows one settings change per 24 hours.
-
-## Backup and restore
+### restore-battery.ts
 
 ```bash
 npx tsx restore-battery.ts --backup --sn=YOURSERIAL
 npx tsx restore-battery.ts --list --sn=YOURSERIAL
 npx tsx restore-battery.ts --restore=./backups/alphaess-backup-YOURSERIAL-2025-01-15T10-30-00.json
 ```
+
+Backup and restore battery charge/discharge settings.
 
 ## Configuration
 
