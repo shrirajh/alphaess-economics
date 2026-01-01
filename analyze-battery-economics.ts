@@ -1798,6 +1798,13 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
 
   const peakHoursDesc = formatPeakHours(peakHours ?? []);
 
+  // AlphaESS only supports 2 configurable discharge periods
+  // Get peak periods sorted by importance (longest first)
+  const sortedPeakPeriods = getPeakPeriodsFromTariff();
+  const configurablePeriods = sortedPeakPeriods.slice(0, 2);
+  const configurablePeriodsDesc = configurablePeriods.map(p => `${p.start}-${p.end}`).join(' and ');
+  const hasMoreThan2Periods = sortedPeakPeriods.length > 2;
+
   // Issue 1: Battery discharge timing (UNIFIED analysis)
   const offpeakDischarge = analysis.overall.batteryDischargeTOU.offpeak ?? 0;
   const shoulderDischarge = analysis.overall.batteryDischargeTOU.shoulder ?? 0;
@@ -1860,7 +1867,11 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
       howToFix.push('🔧 HOW TO FIX:');
       howToFix.push('   1. Open AlphaESS app → Settings → Function Setting');
       howToFix.push('   2. Enable "Battery Discharge Time Control"');
-      howToFix.push(`   3. Set discharge period to: ${peakHoursDesc}`);
+      howToFix.push(`   3. Set discharge periods to: ${configurablePeriodsDesc}`);
+      if (hasMoreThan2Periods) {
+        howToFix.push(`      ⚠️  Note: Your tariff has ${sortedPeakPeriods.length} peak windows but AlphaESS only supports 2`);
+        howToFix.push(`         These are the longest/most valuable periods to cover`);
+      }
       howToFix.push('   4. This tells battery to PRIORITIZE peak hours');
       howToFix.push('   5. Battery will still power loads from solar during off-peak');
       howToFix.push('      but won\'t drain stored energy until peak hours');
@@ -1896,8 +1907,14 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
           '🔧 HOW TO FIX:',
           '   1. Open AlphaESS app → Settings → Function Setting',
           '   2. Enable "Battery Discharge Time Control"',
-          `   3. Set discharge period to: ${peakHoursDesc}`,
+          `   3. Set discharge period to: ${configurablePeriodsDesc}`,
           '   4. This ensures battery ALWAYS prioritizes peak hours',
+          ...(hasMoreThan2Periods ? [
+            '',
+            `⚠️  LIMITATION: Your tariff has ${sortedPeakPeriods.length} peak windows (${peakHoursDesc})`,
+            `   but AlphaESS only supports 2 configurable periods.`,
+            `   The 2 longest windows are selected: ${configurablePeriodsDesc}`,
+          ] : []),
         ]
       });
     }
@@ -2162,6 +2179,19 @@ function getPeakPeriodsFromTariff(): PeakPeriod[] {
     rate: peakRate
   });
 
+  // Sort by period length (longest first) - most important periods get priority
+  // when we can only configure 2 discharge windows
+  periods.sort((a, b) => {
+    const aStart = parseInt(a.start.split(':')[0]!);
+    const aEnd = parseInt(a.end.split(':')[0]!);
+    const bStart = parseInt(b.start.split(':')[0]!);
+    const bEnd = parseInt(b.end.split(':')[0]!);
+    // Handle wrap-around (e.g., 15:00-00:00 = 9 hours)
+    const aLength = aEnd <= aStart ? (24 - aStart + aEnd) : (aEnd - aStart);
+    const bLength = bEnd <= bStart ? (24 - bStart + bEnd) : (bEnd - bStart);
+    return bLength - aLength;  // Descending (longest first)
+  });
+
   return periods;
 }
 
@@ -2319,6 +2349,39 @@ function printAndSaveConfig(stats: Stats, analysis: Analysis): void {
     console.log('    ' + line);
   }
   console.log(`    → Discharge only during peak @ $${fmt(peakRate, 2)}/kWh`);
+
+  // Check for period limitation
+  const allPeakPeriods = getPeakPeriodsFromTariff();
+  if (allPeakPeriods.length > 2) {
+    // Calculate hours for each period
+    const peakHoursInfo: { period: string; hours: number }[] = [];
+    for (const p of allPeakPeriods) {
+      const startHour = parseInt(p.start.split(':')[0]!);
+      const endHour = parseInt(p.end.split(':')[0]!);
+      const hours = endHour <= startHour ? (24 - startHour + endHour) : (endHour - startHour);
+      peakHoursInfo.push({ period: `${p.start}-${p.end}`, hours });
+    }
+
+    const totalPeakHours = peakHoursInfo.reduce((sum, p) => sum + p.hours, 0);
+    const coveredHours = peakHoursInfo[0]!.hours + peakHoursInfo[1]!.hours;
+    const missedHours = peakHoursInfo[2]!.hours;
+    const coveragePct = (coveredHours / totalPeakHours) * 100;
+
+    console.log('');
+    console.log(`    ⚠️  LIMITATION: ${allPeakPeriods.length} peak windows but only 2 can be configured`);
+    console.log(`       Peak windows by length:`);
+    for (let i = 0; i < peakHoursInfo.length; i++) {
+      const p = peakHoursInfo[i]!;
+      const selected = i < 2 ? '✓' : '✗';
+      console.log(`         ${selected} ${p.period} (${p.hours}h)`);
+    }
+    console.log('');
+    console.log(`       Coverage: ${coveredHours}h of ${totalPeakHours}h peak (${fmt(coveragePct, 0)}%)`);
+    console.log(`       Unconfigured: ${peakHoursInfo[2]!.period} (${missedHours}h)`);
+    console.log('');
+    console.log(`       ℹ️  The unconfigured window is still "peak rate" - battery will`);
+    console.log(`          discharge if needed, just not PRIORITIZED like configured periods.`);
+  }
 
   console.log('\n  📥 CHARGE (for grid arbitrage):');
   const recChargeLines = formatChargeConfig(recommended.recommendedConfig.charge);
