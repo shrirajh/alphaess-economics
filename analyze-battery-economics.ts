@@ -21,6 +21,8 @@ const BATTERY_SIZE_KWH = 10;
 const BATTERY_LIFESPAN_YEARS = parseFloat(process.env.BATTERY_LIFESPAN_YEARS ?? '') || 10;
 const BATTERY_EFFICIENCY = 0.90;
 const USABLE_CAPACITY_PERCENT = 0.90;
+const MAX_CHARGE_RATE_KW = 5; // Max battery charge rate in kW
+const SHOULDER_HOURS = 5; // 10am-3pm = 5 hours of charging window
 
 // Your actual installation costs (for retrospective ROI calculation)
 const BATTERY_SUNK_COST = parseFloat(process.env.BATTERY_SUNK_COST ?? '') || 0;
@@ -94,6 +96,11 @@ interface DailyEntry {
   peakExport: number;
   shoulderExport: number;
   offpeakExport: number;
+  // Split peak into morning (6-10am) and afternoon/evening (3pm-1am)
+  morningPeakImport: number;
+  afternoonPeakImport: number;
+  morningPeakExport: number;
+  afternoonPeakExport: number;
 }
 
 type RatePeriod = 'peak' | 'shoulder' | 'offpeak';
@@ -230,15 +237,41 @@ function emptyTOUBreakdown(): TOUBreakdown {
   return { peak: 0, shoulder: 0, offpeak: 0 };
 }
 
+interface TOUResult {
+  import: TOUBreakdown;
+  export: TOUBreakdown;
+  // Split peak into morning (6-10am) vs afternoon/evening (3pm-1am)
+  morningPeakImport: number;
+  afternoonPeakImport: number;
+  morningPeakExport: number;
+  afternoonPeakExport: number;
+}
+
+// Check if hour is in morning peak (6-10am)
+function isMorningPeak(hour: number): boolean {
+  return hour >= 6 && hour < 10;
+}
+
 // Calculate TOU breakdown from power readings
 // Power readings are in W, typically every 5 minutes
 // We sum them and convert to approximate kWh
-function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined): { import: TOUBreakdown; export: TOUBreakdown } {
+function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined): TOUResult {
   const importTOU = emptyTOUBreakdown();
   const exportTOU = emptyTOUBreakdown();
+  let morningPeakImport = 0;
+  let afternoonPeakImport = 0;
+  let morningPeakExport = 0;
+  let afternoonPeakExport = 0;
 
   if (!powerReadings || powerReadings.length === 0) {
-    return { import: importTOU, export: exportTOU };
+    return {
+      import: importTOU,
+      export: exportTOU,
+      morningPeakImport,
+      afternoonPeakImport,
+      morningPeakExport,
+      afternoonPeakExport
+    };
   }
 
   // Sort by time to calculate intervals
@@ -277,9 +310,27 @@ function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined)
 
     importTOU[period] += importKwh;
     exportTOU[period] += exportKwh;
+
+    // Track morning vs afternoon peak separately
+    if (period === 'peak') {
+      if (isMorningPeak(hour)) {
+        morningPeakImport += importKwh;
+        morningPeakExport += exportKwh;
+      } else {
+        afternoonPeakImport += importKwh;
+        afternoonPeakExport += exportKwh;
+      }
+    }
   }
 
-  return { import: importTOU, export: exportTOU };
+  return {
+    import: importTOU,
+    export: exportTOU,
+    morningPeakImport,
+    afternoonPeakImport,
+    morningPeakExport,
+    afternoonPeakExport
+  };
 }
 
 function emptyTotals(): PeriodTotals {
@@ -419,11 +470,26 @@ function calculatePeriodAnalysis(totals: PeriodTotals): PeriodAnalysis {
     batteryDischarge: totals.batteryDischarge / days
   };
 
-  const importDistribution = { peak: 0.70, shoulder: 0.05, offpeak: 0.25 };
-  const dailyImportCost =
-    avgDaily.gridImport * importDistribution.peak * RATES.peak +
-    avgDaily.gridImport * importDistribution.shoulder * RATES.shoulder +
-    avgDaily.gridImport * importDistribution.offpeak * RATES.offpeak;
+  // Use actual TOU data when available, otherwise fall back to estimated distribution
+  const hasTOUData = touTotal(totals.importByTOU) > 0;
+  let dailyImportCost: number;
+
+  if (hasTOUData) {
+    // Calculate from actual TOU breakdown
+    const totalTOUCost =
+      totals.importByTOU.peak * RATES.peak +
+      totals.importByTOU.shoulder * RATES.shoulder +
+      totals.importByTOU.offpeak * RATES.offpeak;
+    dailyImportCost = totalTOUCost / days;
+  } else {
+    // Fall back to estimated distribution
+    const importDistribution = { peak: 0.70, shoulder: 0.05, offpeak: 0.25 };
+    dailyImportCost =
+      avgDaily.gridImport * importDistribution.peak * RATES.peak +
+      avgDaily.gridImport * importDistribution.shoulder * RATES.shoulder +
+      avgDaily.gridImport * importDistribution.offpeak * RATES.offpeak;
+  }
+
   const dailyFeedInRevenue = avgDaily.gridExport * RATES.feedIn;
 
   return {
@@ -534,7 +600,12 @@ function analyzeHistoricalData(stats: Stats): Analysis {
       offpeakImport: tou.import.offpeak,
       peakExport: tou.export.peak,
       shoulderExport: tou.export.shoulder,
-      offpeakExport: tou.export.offpeak
+      offpeakExport: tou.export.offpeak,
+      // Morning vs afternoon peak split
+      morningPeakImport: tou.morningPeakImport,
+      afternoonPeakImport: tou.afternoonPeakImport,
+      morningPeakExport: tou.morningPeakExport,
+      afternoonPeakExport: tou.afternoonPeakExport
     };
     daily.push(entry);
 
@@ -618,6 +689,9 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
   const scenarios: Scenario[] = [];
   const currentBatteryKwh = analysis.currentBatteryKwh;
 
+  // Max energy that can be captured in a day based on charge rate and shoulder hours
+  const maxDailyCharge = MAX_CHARGE_RATE_KW * SHOULDER_HOURS;
+
   // Calculate using ACTUAL daily data with ACTUAL TOU breakdown
   for (let additionalBatteries = 0; additionalBatteries <= 3; additionalBatteries++) {
     const additionalKwh = additionalBatteries * BATTERY_SIZE_KWH;
@@ -628,36 +702,48 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
     let totalCaptured = 0;
 
     for (const day of analysis.daily) {
-      // How much can we capture? Limited by battery capacity and available export
-      const capturable = Math.min(additionalUsableKwh, Math.max(0, day.gridExport));
+      // How much can we capture? Limited by:
+      // 1. Battery capacity (usable)
+      // 2. Available export (solar excess)
+      // 3. Charge rate × available charging hours (shoulder period)
+      const capturable = Math.min(
+        additionalUsableKwh,
+        Math.max(0, day.gridExport),
+        maxDailyCharge
+      );
       if (capturable <= 0) continue;
 
       // How much can we discharge? capturable × efficiency
       const dischargeable = capturable * BATTERY_EFFICIENCY;
 
-      // Use ACTUAL TOU data: discharge during peak first (highest value), then shoulder
-      // If no power data, fall back to using total import with calculated overall ratio
+      // Use ACTUAL TOU data: discharge during AFTERNOON peak only (not morning peak)
+      // Morning peak (6-10am) happens BEFORE solar production, so we can't use same-day
+      // solar to serve morning peak. Only afternoon/evening peak (3pm-1am) is serviceable.
       const hasTOUData = day.peakImport > 0 || day.shoulderImport > 0 || day.offpeakImport > 0;
 
-      let peakDischarge: number;
+      let afternoonPeakDischarge: number;
       let shoulderDischarge: number;
 
       if (hasTOUData) {
-        // Use actual measured TOU data
-        peakDischarge = Math.min(dischargeable, day.peakImport);
-        shoulderDischarge = Math.min(dischargeable - peakDischarge, day.shoulderImport);
+        // Use actual measured TOU data - only afternoon peak is usable
+        afternoonPeakDischarge = Math.min(dischargeable, day.afternoonPeakImport);
+        shoulderDischarge = Math.min(dischargeable - afternoonPeakDischarge, day.shoulderImport);
       } else {
-        // Fall back: use overall calculated TOU ratio from analysis
+        // Fall back: estimate afternoon peak as portion of total peak
+        // Afternoon peak (3pm-1am = 10 hours) vs morning peak (6-10am = 4 hours)
+        // So ~71% of peak hours are in the afternoon/evening
+        const afternoonPeakRatio = 0.71;
         const overallPeakRatio = analysis.hasPowerData
           ? analysis.overall.importByTOU.peak / (analysis.overall.gridImport || 1)
-          : 0.70;  // Last resort assumption
-        peakDischarge = Math.min(dischargeable, day.gridImport * overallPeakRatio);
+          : 0.70;
+        const estimatedAfternoonPeak = day.gridImport * overallPeakRatio * afternoonPeakRatio;
+        afternoonPeakDischarge = Math.min(dischargeable, estimatedAfternoonPeak);
         shoulderDischarge = 0;  // Conservative: don't assume shoulder value without data
       }
 
       // Calculate value: stored solar would have been exported at feed-in rate
-      // Instead, we discharge during peak/shoulder avoiding those import costs
-      const dayValue = peakDischarge * RATES.peak + shoulderDischarge * RATES.shoulder
+      // Instead, we discharge during afternoon peak/shoulder avoiding those import costs
+      const dayValue = afternoonPeakDischarge * RATES.peak + shoulderDischarge * RATES.shoulder
                        - capturable * RATES.feedIn;
 
       totalValue += dayValue;
@@ -696,14 +782,24 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
-  const importDistribution = { peak: 0.70, shoulder: 0.05, offpeak: 0.25 };
-  const avgImportRate =
-    importDistribution.peak * RATES.peak +
-    importDistribution.shoulder * RATES.shoulder +
-    importDistribution.offpeak * RATES.offpeak;
+  // Fallback TOU distribution if no power data available
+  const fallbackImportDist = { peak: 0.70, shoulder: 0.05, offpeak: 0.25 };
+  const fallbackAvgRate =
+    fallbackImportDist.peak * RATES.peak +
+    fallbackImportDist.shoulder * RATES.shoulder +
+    fallbackImportDist.offpeak * RATES.offpeak;
 
   // ACTUAL: What you paid with solar + battery
-  const actualImportCost = analysis.overall.gridImport * avgImportRate;
+  // Use actual TOU data when available
+  let actualImportCost: number;
+  if (analysis.hasPowerData && touTotal(analysis.overall.importByTOU) > 0) {
+    actualImportCost =
+      analysis.overall.importByTOU.peak * RATES.peak +
+      analysis.overall.importByTOU.shoulder * RATES.shoulder +
+      analysis.overall.importByTOU.offpeak * RATES.offpeak;
+  } else {
+    actualImportCost = analysis.overall.gridImport * fallbackAvgRate;
+  }
   const actualFeedInRevenue = analysis.overall.gridExport * RATES.feedIn;
   const actualNetCost = actualImportCost - actualFeedInRevenue;
 
@@ -713,14 +809,31 @@ function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
   //
   // Battery discharge = energy that would have been imported
   // Battery charge (from solar) = energy that would have been exported
-  // Net battery benefit = discharge * peak_rate - charge * feedin_rate (minus efficiency losses)
   //
-  // Solar-only import = actual import + battery discharge (you'd need to import what the battery provided)
-  // Solar-only export = actual export + battery charge (you'd export what went into the battery)
+  // CRITICAL: Battery discharge is primarily during PEAK hours (that's the arbitrage strategy).
+  // Without battery, that peak demand becomes grid imports at peak rates.
+  // So solar-only scenario has MORE peak imports than actual, not the same distribution.
 
   const solarOnlyImport = analysis.overall.gridImport + analysis.overall.batteryDischarge;
   const solarOnlyExport = analysis.overall.gridExport + analysis.overall.batteryCharge;
-  const solarOnlyImportCost = solarOnlyImport * avgImportRate;
+
+  // Battery discharge was avoiding peak imports, so without battery those become peak imports
+  // The additional imports from battery discharge should be costed at peak rate
+  let solarOnlyImportCost: number;
+  if (analysis.hasPowerData && touTotal(analysis.overall.importByTOU) > 0) {
+    // Actual imports at their actual TOU rates, plus battery discharge at peak rate
+    // (Battery discharge was primarily avoiding peak imports)
+    solarOnlyImportCost = actualImportCost + (analysis.overall.batteryDischarge * RATES.peak);
+  } else {
+    // Fallback: Use higher peak ratio for solar-only (0.85 instead of 0.70)
+    // because battery discharge (mostly peak) becomes grid imports
+    const solarOnlyPeakRatio = 0.85;
+    const solarOnlyAvgRate =
+      solarOnlyPeakRatio * RATES.peak +
+      0.05 * RATES.shoulder +
+      0.10 * RATES.offpeak;
+    solarOnlyImportCost = solarOnlyImport * solarOnlyAvgRate;
+  }
   const solarOnlyFeedInRevenue = solarOnlyExport * RATES.feedIn;
   const solarOnlyNetCost = solarOnlyImportCost - solarOnlyFeedInRevenue;
 
@@ -729,7 +842,7 @@ function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
   // Load = PV + Import + BatteryDischarge - Export - BatteryCharge
   // But simpler: noSolarImport = load (everything comes from grid)
   const noSolarImport = analysis.overall.load;
-  const noSolarImportCost = noSolarImport * avgImportRate;
+  const noSolarImportCost = noSolarImport * fallbackAvgRate;
   const noSolarNetCost = noSolarImportCost; // No feed-in revenue
 
   return {
