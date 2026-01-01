@@ -352,7 +352,6 @@ function writeCache<T>(cachePath: string, data: T): void {
 // CDR ENDPOINT DISCOVERY
 // ═══════════════════════════════════════════════════════════════════════════
 
-const CDR_REGISTER_URL = 'https://api.cdr.gov.au/cdr-register/v1/banking/data-holders/brands/summary';
 const EME_REGISTER_URL = 'https://api.energymadeeasy.gov.au/refdata2?keys=organisations';
 
 async function discoverEndpoints(config: ScraperConfig, force: boolean = false): Promise<CDREndpointsFile> {
