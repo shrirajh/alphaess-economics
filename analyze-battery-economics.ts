@@ -104,6 +104,8 @@ interface DailyEntry {
   afternoonPeakImport: number;
   morningPeakExport: number;
   afternoonPeakExport: number;
+  // Load analysis
+  earlyMorningLoad: number;   // 6am-10am consumption (for pre-discharge analysis)
   // Battery behavior (from power data and daily aggregates)
   battery: BatteryBehavior;
 }
@@ -128,6 +130,11 @@ interface BatteryBehavior {
   solarCapturable: number;      // Export that could have been stored
   gridChargeable: number;       // Off-peak capacity available for grid charging
   peakOffsetable: number;       // Peak import that could be offset with more capacity
+
+  // Full battery analysis
+  reachedFullSoC: boolean;      // Did battery reach 95%+ today?
+  hourReachedFull: number;      // Hour when battery first hit 95%+ (0-23, or -1 if never)
+  exportAfterFull: number;      // kWh exported after battery was full
 }
 
 interface BatteryEfficiencyPeriod {
@@ -155,6 +162,8 @@ interface PeriodTotals {
   gridChargeTOU: TOUBreakdown;         // Grid→battery charging by TOU period
   chargeFromSolar: number;             // Total solar→battery kWh
   chargeFromGrid: number;              // Total grid→battery kWh (from eGridCharge)
+  // Load analysis
+  earlyMorningLoad: number;            // Total 6am-10am consumption (pre-solar peak)
 }
 
 interface PeriodAnalysis extends PeriodTotals {
@@ -268,6 +277,8 @@ interface TOUResult {
   // Battery behavior tracking
   batteryDischargeTOU: TOUBreakdown;  // Discharge kWh by TOU period
   gridChargeTOU: TOUBreakdown;        // Grid→battery charging by TOU period
+  loadByTOU: TOUBreakdown;            // Consumption by TOU period
+  earlyMorningLoad: number;           // Load from 6am-10am (pre-solar peak)
   minSoC: number;                     // Minimum battery SoC (0-100)
   maxSoC: number;                     // Maximum battery SoC (0-100)
 }
@@ -286,10 +297,12 @@ function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined,
   const exportByFeedInPeriod = emptyFeedInBreakdown();
   const batteryDischargeTOU = emptyTOUBreakdown();
   const gridChargeTOU = emptyTOUBreakdown();
+  const loadByTOU = emptyTOUBreakdown();  // Track consumption by TOU period
   let morningPeakImport = 0;
   let afternoonPeakImport = 0;
   let morningPeakExport = 0;
   let afternoonPeakExport = 0;
+  let earlyMorningLoad = 0;  // 6am-10am (before solar peak)
   let minSoC = 100;
   let maxSoC = 0;
 
@@ -304,6 +317,8 @@ function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined,
       afternoonPeakExport,
       batteryDischargeTOU,
       gridChargeTOU,
+      loadByTOU,
+      earlyMorningLoad,
       minSoC: 0,
       maxSoC: 0
     };
@@ -344,11 +359,18 @@ function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined,
     // Convert W to kWh for this interval
     const importKwh = (reading.gridCharge / 1000) * intervalHours;
     const exportKwh = (reading.feedIn / 1000) * intervalHours;
+    const loadKwh = (reading.load / 1000) * intervalHours;
 
     // Use dynamic period name from tariff for imports
     const periodName = periodResult.name;
     importTOU[periodName] = (importTOU[periodName] ?? 0) + importKwh;
     exportTOU[periodName] = (exportTOU[periodName] ?? 0) + exportKwh;
+    loadByTOU[periodName] = (loadByTOU[periodName] ?? 0) + loadKwh;
+
+    // Track early morning load (6am-10am) for pre-discharge analysis
+    if (hour >= 6 && hour < 10) {
+      earlyMorningLoad += loadKwh;
+    }
 
     // Track exports by feed-in period (may differ from consumption periods)
     const feedInResult = getFeedInRate(hour, dayOfWeek);
@@ -420,9 +442,77 @@ function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined,
     afternoonPeakExport,
     batteryDischargeTOU,
     gridChargeTOU,
+    loadByTOU,
+    earlyMorningLoad,
     minSoC,
     maxSoC
   };
+}
+
+// Analyze when battery reaches full and export that occurs afterward
+function analyzeFullBatteryBehavior(powerReadings: PowerReading[] | null): {
+  reachedFullSoC: boolean;
+  hourReachedFull: number;
+  exportAfterFull: number;
+} {
+  const FULL_SOC_THRESHOLD = 95;
+
+  if (!powerReadings || powerReadings.length === 0) {
+    return { reachedFullSoC: false, hourReachedFull: -1, exportAfterFull: 0 };
+  }
+
+  // Sort by time
+  const sorted = [...powerReadings].sort((a, b) =>
+    a.uploadTime.localeCompare(b.uploadTime)
+  );
+
+  let reachedFullSoC = false;
+  let hourReachedFull = -1;
+  let exportAfterFull = 0;
+  let batteryIsFull = false;
+
+  for (let i = 0; i < sorted.length; i++) {
+    const reading = sorted[i];
+    if (!reading) continue;
+
+    const timePart = reading.uploadTime.includes('T')
+      ? reading.uploadTime.split('T')[1]
+      : reading.uploadTime.split(' ')[1];
+    const hour = parseInt(timePart?.split(':')[0] ?? '0', 10);
+
+    // Calculate interval for energy calculation
+    let intervalHours = 5 / 60; // default 5 minutes
+    if (i < sorted.length - 1) {
+      const next = sorted[i + 1];
+      if (next) {
+        const currentTime = new Date(reading.uploadTime).getTime();
+        const nextTime = new Date(next.uploadTime).getTime();
+        const diffMs = nextTime - currentTime;
+        if (diffMs > 0 && diffMs < 3600000) {
+          intervalHours = diffMs / 3600000;
+        }
+      }
+    }
+
+    // Check if battery reached full
+    if (!reachedFullSoC && reading.cbat !== undefined && reading.cbat >= FULL_SOC_THRESHOLD) {
+      reachedFullSoC = true;
+      hourReachedFull = hour;
+      batteryIsFull = true;
+    }
+
+    // Track if battery dropped below full (e.g., started discharging)
+    if (batteryIsFull && reading.cbat !== undefined && reading.cbat < FULL_SOC_THRESHOLD - 5) {
+      batteryIsFull = false;
+    }
+
+    // Track export after battery was full (or is still full)
+    if (reachedFullSoC && reading.feedIn > 0) {
+      exportAfterFull += (reading.feedIn / 1000) * intervalHours;
+    }
+  }
+
+  return { reachedFullSoC, hourReachedFull, exportAfterFull };
 }
 
 function emptyTotals(): PeriodTotals {
@@ -440,7 +530,8 @@ function emptyTotals(): PeriodTotals {
     batteryDischargeTOU: emptyTOUBreakdown(),
     gridChargeTOU: emptyTOUBreakdown(),
     chargeFromSolar: 0,
-    chargeFromGrid: 0
+    chargeFromGrid: 0,
+    earlyMorningLoad: 0
   };
 }
 
@@ -689,6 +780,9 @@ function analyzeHistoricalData(stats: Stats): Analysis {
     // Calculate TOU from power readings for this day (with battery behavior tracking)
     const tou = calculateTOUFromPower(day.power as PowerReading[] | null, batteryCapacityKwh);
 
+    // Analyze when battery reaches full and export afterward
+    const fullBattery = analyzeFullBatteryBehavior(day.power as PowerReading[] | null);
+
     // Calculate battery behavior from daily aggregates + power data
     const chargeFromGrid = e.eGridCharge ?? 0;
     const chargeFromSolar = Math.max(0, (e.eCharge ?? 0) - chargeFromGrid);
@@ -715,7 +809,10 @@ function analyzeHistoricalData(stats: Stats): Analysis {
       cycleDepth: tou.maxSoC - tou.minSoC,
       solarCapturable,
       gridChargeable,
-      peakOffsetable
+      peakOffsetable,
+      reachedFullSoC: fullBattery.reachedFullSoC,
+      hourReachedFull: fullBattery.hourReachedFull,
+      exportAfterFull: fullBattery.exportAfterFull
     };
 
     const entry: DailyEntry = {
@@ -741,6 +838,8 @@ function analyzeHistoricalData(stats: Stats): Analysis {
       afternoonPeakImport: tou.afternoonPeakImport,
       morningPeakExport: tou.morningPeakExport,
       afternoonPeakExport: tou.afternoonPeakExport,
+      // Load analysis
+      earlyMorningLoad: tou.earlyMorningLoad,
       // Battery behavior
       battery: batteryBehavior
     };
@@ -763,6 +862,8 @@ function analyzeHistoricalData(stats: Stats): Analysis {
       addTOU(totals.gridChargeTOU, tou.gridChargeTOU);
       totals.chargeFromSolar += chargeFromSolar;
       totals.chargeFromGrid += chargeFromGrid;
+      // Load analysis
+      totals.earlyMorningLoad += entry.earlyMorningLoad;
     };
 
     addToTotals(overallTotals);
@@ -1390,6 +1491,496 @@ function printBatteryUtilizationReport(analysis: Analysis): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// OPTIMIZATION RECOMMENDATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface OptimizationIssue {
+  severity: 'high' | 'medium' | 'low';
+  issue: string;
+  impact: string;
+  annualValue: number;
+  howToFix: string[];
+}
+
+function generateOptimizationRecommendations(analysis: Analysis): OptimizationIssue[] {
+  const issues: OptimizationIssue[] = [];
+  const peakRate = getRateForPeriod('peak');
+  const offpeakRate = getRateForPeriod('offpeak');
+  const feedInRate = TARIFF.feedInTariff;
+
+  // Get peak hours from tariff for recommendations
+  const peakHours = TARIFF.periods?.everyday?.find((p: { name: string }) => p.name === 'peak')?.hours as number[] | undefined;
+
+  // Format peak hours, handling split periods (e.g., 6-10am AND 3pm-1am)
+  function formatPeakHours(hours: number[]): string {
+    if (!hours || hours.length === 0) return 'check your tariff for peak hours';
+
+    const sorted = [...hours].sort((a, b) => a - b);
+    const ranges: string[] = [];
+    let start = sorted[0]!;
+    let end = sorted[0]!;
+
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i] === end + 1) {
+        end = sorted[i]!;
+      } else {
+        ranges.push(`${start}:00-${end + 1}:00`);
+        start = sorted[i]!;
+        end = sorted[i]!;
+      }
+    }
+    ranges.push(`${start}:00-${end + 1}:00`);
+
+    return ranges.join(' and ');
+  }
+
+  const peakHoursDesc = formatPeakHours(peakHours ?? []);
+
+  // Issue 1: Off-peak discharge waste
+  const offpeakDischarge = analysis.overall.batteryDischargeTOU.offpeak ?? 0;
+  const peakDischarge = analysis.overall.batteryDischargeTOU.peak ?? 0;
+  const totalDischarge = offpeakDischarge + peakDischarge + (analysis.overall.batteryDischargeTOU.shoulder ?? 0);
+
+  if (offpeakDischarge > 0 && totalDischarge > 0) {
+    const offpeakDischargePercent = (offpeakDischarge / totalDischarge) * 100;
+    const annualWaste = (offpeakDischarge / analysis.overall.days) * 365 * (peakRate - offpeakRate);
+
+    if (offpeakDischargePercent > 20 || annualWaste > 50) {
+      issues.push({
+        severity: offpeakDischargePercent > 40 ? 'high' : 'medium',
+        issue: `Battery discharging during off-peak periods (${fmt(offpeakDischargePercent, 0)}% of total discharge)`,
+        impact: `${fmt(offpeakDischarge / analysis.overall.days, 1)} kWh/day discharged when electricity is cheap`,
+        annualValue: annualWaste,
+        howToFix: [
+          '1. Open AlphaESS app → Settings → Function Setting',
+          '2. Enable "Battery Discharge Time Control"',
+          `3. Set discharge period to ONLY ${peakHoursDesc}`,
+          '4. This prevents the battery from discharging during cheap off-peak periods',
+          '5. Save settings and monitor for a few days'
+        ]
+      });
+    }
+  }
+
+  // Issue 2: Peak grid charging waste
+  const peakGridCharge = analysis.overall.gridChargeTOU.peak ?? 0;
+  const totalGridCharge = analysis.overall.chargeFromGrid;
+
+  if (peakGridCharge > 0) {
+    const peakChargePercent = totalGridCharge > 0 ? (peakGridCharge / totalGridCharge) * 100 : 0;
+    const annualWaste = (peakGridCharge / analysis.overall.days) * 365 * (peakRate - offpeakRate);
+
+    if (annualWaste > 20) {
+      issues.push({
+        severity: peakChargePercent > 30 ? 'high' : 'medium',
+        issue: `Battery charging from grid during peak periods (${fmt(peakChargePercent, 0)}% of grid charging)`,
+        impact: `Paying peak rate ($${fmt(peakRate, 2)}/kWh) instead of off-peak ($${fmt(offpeakRate, 2)}/kWh) to charge`,
+        annualValue: annualWaste,
+        howToFix: [
+          '1. Open AlphaESS app → Settings → Function Setting',
+          '2. Enable "Charge Batteries from Grid"',
+          '3. Set charging period to ONLY off-peak hours (typically overnight)',
+          '4. Disable any "force charge" settings during peak hours',
+          '5. Consider setting a charge limit (e.g., charge to 80%) to leave room for solar'
+        ]
+      });
+    }
+  }
+
+  // Issue 3: Low peak discharge ratio (battery not targeting peak)
+  if (totalDischarge > 0 && peakDischarge / totalDischarge < 0.6) {
+    const peakRatio = (peakDischarge / totalDischarge) * 100;
+    const idealPeakDischarge = totalDischarge * 0.8;  // Target 80% to peak
+    const missedValue = (idealPeakDischarge - peakDischarge) / analysis.overall.days * 365 * (peakRate - offpeakRate);
+
+    if (missedValue > 50) {
+      issues.push({
+        severity: peakRatio < 40 ? 'high' : 'medium',
+        issue: `Only ${fmt(peakRatio, 0)}% of battery discharge goes to peak periods`,
+        impact: `Battery not targeting expensive periods effectively`,
+        annualValue: missedValue,
+        howToFix: [
+          '1. Check if battery is in "Self-Consumption" mode (this ignores TOU rates)',
+          '2. Switch to "Time-of-Use" or "TOU" mode if available',
+          `3. Set discharge schedule to ${peakHoursDesc}`,
+          '4. In AlphaESS: Settings → Battery Discharge Time Control → Set peak hours only'
+        ]
+      });
+    }
+  }
+
+  // Issue 4: Missed solar capture (exporting while battery has capacity)
+  const avgExport = analysis.overall.gridExport / analysis.overall.days;
+  const avgSolarCharge = analysis.overall.chargeFromSolar / analysis.overall.days;
+  const batteryCapacity = analysis.currentBatteryKwh * USABLE_CAPACITY_PERCENT;
+
+  // Analyze battery "reaching full" behavior across all days
+  const daysReachedFull = analysis.daily.filter(d => d.battery.reachedFullSoC).length;
+  const daysWithData = analysis.daily.filter(d => d.battery.maxSoC > 0).length;
+  const pctDaysReachedFull = daysWithData > 0 ? (daysReachedFull / daysWithData) * 100 : 0;
+
+  const daysWithHourData = analysis.daily.filter(d => d.battery.hourReachedFull >= 0);
+  const avgHourReachedFull = daysWithHourData.length > 0
+    ? daysWithHourData.reduce((sum, d) => sum + d.battery.hourReachedFull, 0) / daysWithHourData.length
+    : -1;
+
+  const totalExportAfterFull = analysis.daily.reduce((sum, d) => sum + d.battery.exportAfterFull, 0);
+  const avgExportAfterFull = analysis.overall.days > 0 ? totalExportAfterFull / analysis.overall.days : 0;
+
+  if (avgExport > 2 && avgSolarCharge < batteryCapacity * 0.7) {
+    // Significant export but battery not fully utilizing solar
+    const potentialCapture = Math.min(avgExport, batteryCapacity - avgSolarCharge);
+    const annualValue = potentialCapture * 365 * (peakRate - feedInRate);
+
+    if (annualValue > 50) {
+      // Build data-driven how-to-fix based on actual battery behavior
+      const howToFix: string[] = [];
+
+      if (pctDaysReachedFull > 50 && avgHourReachedFull >= 0) {
+        const hourFormatted = avgHourReachedFull < 10 ? `0${Math.floor(avgHourReachedFull)}:00` : `${Math.floor(avgHourReachedFull)}:00`;
+        howToFix.push(`✓ Battery reaches 100% on ${fmt(pctDaysReachedFull, 0)}% of days, typically around ${hourFormatted}`);
+        howToFix.push(`  → ${fmt(avgExportAfterFull, 1)} kWh/day exported AFTER battery is full`);
+
+        // Model what would happen with additional battery capacity
+        // Estimate solar charge rate: current capacity / hours to fill
+        const SOLAR_START_HOUR = 7;  // Assume meaningful solar starts at 7am
+        const hoursToFill = Math.max(1, avgHourReachedFull - SOLAR_START_HOUR);
+        const solarChargeRate = avgSolarCharge / hoursToFill;  // kWh per hour
+
+        // With +10kWh battery, how much later would it fill?
+        const additionalCapacity = BATTERY_SIZE_KWH * USABLE_CAPACITY_PERCENT;
+        const additionalHoursToFill = solarChargeRate > 0 ? additionalCapacity / solarChargeRate : 0;
+        const newFillHour = avgHourReachedFull + additionalHoursToFill;
+
+        // How much more solar could be captured?
+        // KEY CONSTRAINT: You can only capture what you can usefully discharge!
+        // Remaining peak import = what's left after current battery
+        const remainingPeakImport = (analysis.overall.importByTOU.peak ?? 0) / analysis.overall.days;
+        const remainingShoulderImport = (analysis.overall.importByTOU.shoulder ?? 0) / analysis.overall.days;
+        const maxUsefulDischarge = remainingPeakImport + remainingShoulderImport;
+
+        // Solar capturable is limited by: export available, capacity, and useful discharge
+        const additionalSolarCapture = Math.min(
+          avgExportAfterFull,
+          additionalCapacity,
+          maxUsefulDischarge / BATTERY_EFFICIENCY  // Can only store what you can usefully discharge
+        );
+
+        // Value = what we save on peak import - what we lose on feed-in
+        const dischargeable = additionalSolarCapture * BATTERY_EFFICIENCY;
+        const captureValue = (dischargeable * peakRate - additionalSolarCapture * feedInRate) * 365;
+
+        // Get the actual modeled value from scenarios (more accurate than avg calculation)
+        const scenarios = modelBatteryScenarios(analysis);
+        const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
+        const modeledSolarArb = plusOneBattery?.solarArbitrageValue ?? 0;
+        const modeledGridArb = plusOneBattery?.gridArbitrageValue ?? 0;
+        const modeledTotal = plusOneBattery?.annualSavings ?? 0;
+
+        howToFix.push('');
+        howToFix.push('  📊 MODELING: What if you had MORE battery capacity?');
+        howToFix.push(`     Current ${fmt(batteryCapacity, 0)}kWh fills at ~${hourFormatted}`);
+        howToFix.push(`     Solar charge rate: ~${fmt(solarChargeRate, 1)} kWh/hour`);
+        howToFix.push(`     Remaining peak+shoulder import: ${fmt(maxUsefulDischarge, 1)} kWh/day avg`);
+        howToFix.push('');
+        if (newFillHour < 24) {
+          const newHourFormatted = newFillHour < 10 ? `0${Math.floor(newFillHour)}:00` : `${Math.floor(newFillHour)}:00`;
+          howToFix.push(`     With +${BATTERY_SIZE_KWH}kWh (${fmt(batteryCapacity + additionalCapacity, 0)}kWh total):`);
+          howToFix.push(`        → Would fill at ~${newHourFormatted} instead of ${hourFormatted}`);
+          if (additionalSolarCapture < avgExportAfterFull * 0.9) {
+            // Limited by peak import, not by export
+            howToFix.push(`        → Export after full: ${fmt(avgExportAfterFull, 1)} kWh/day`);
+            howToFix.push(`        → But can only offset: ${fmt(maxUsefulDischarge, 1)} kWh/day peak import`);
+          } else {
+            howToFix.push(`        → Could capture extra ${fmt(additionalSolarCapture, 1)} kWh/day`);
+          }
+          howToFix.push('');
+          howToFix.push(`     ACTUAL MODELED VALUE (day-by-day calculation):`);
+          howToFix.push(`        → Solar arbitrage: $${fmt(modeledSolarArb, 0)}/year`);
+          howToFix.push(`        → Grid arbitrage:  $${fmt(modeledGridArb, 0)}/year`);
+          howToFix.push(`        → TOTAL:           $${fmt(modeledTotal, 0)}/year`);
+          howToFix.push(`        → Payback:         ${fmt(BATTERY_COST / modeledTotal, 1)} years ($${BATTERY_COST} cost)`);
+        } else {
+          howToFix.push(`     With +${BATTERY_SIZE_KWH}kWh: Would NOT reach 100% on most days`);
+          howToFix.push(`        → Solar arbitrage: $${fmt(modeledSolarArb, 0)}/year`);
+          howToFix.push(`        → Grid arbitrage:  $${fmt(modeledGridArb, 0)}/year`);
+          howToFix.push(`        → TOTAL:           $${fmt(modeledTotal, 0)}/year`);
+        }
+
+        if (avgHourReachedFull < 12) {
+          howToFix.push('');
+          howToFix.push('  ⚠️  BUT: Battery fills BEFORE solar peak!');
+
+          // Check if morning consumption is high enough for pre-discharge strategy
+          const avgEarlyMorningLoad = analysis.overall.earlyMorningLoad / analysis.overall.days;
+          const usableCapacity = batteryCapacity * USABLE_CAPACITY_PERCENT;
+
+          if (avgEarlyMorningLoad >= usableCapacity * 0.5) {
+            // Enough morning consumption to drain battery
+            howToFix.push('     FREE alternative: Pre-discharge during morning (6-10am)');
+            howToFix.push(`     Your morning consumption: ${fmt(avgEarlyMorningLoad, 1)} kWh/day (6am-10am)`);
+            howToFix.push(`     Battery usable capacity: ${fmt(usableCapacity, 1)} kWh`);
+            howToFix.push(`     → ${fmt(avgEarlyMorningLoad / usableCapacity * 100, 0)}% of battery could drain before solar peak`);
+            howToFix.push('     → Set "Battery Discharge Time Control" to include 6:00-10:00');
+            howToFix.push('     → Battery has room for solar when generation ramps up');
+          } else if (avgEarlyMorningLoad >= 1) {
+            // Some morning consumption, partial pre-discharge possible
+            howToFix.push('     PARTIAL pre-discharge possible during morning (6-10am)');
+            howToFix.push(`     Your morning consumption: ${fmt(avgEarlyMorningLoad, 1)} kWh/day (6am-10am)`);
+            howToFix.push(`     Battery usable capacity: ${fmt(usableCapacity, 1)} kWh`);
+            howToFix.push(`     → Only ${fmt(avgEarlyMorningLoad / usableCapacity * 100, 0)}% of battery would drain`);
+            howToFix.push('     → Pre-discharge helps but won\'t fully empty battery');
+            howToFix.push('     → Consider if additional battery is worth the partial gain');
+          } else {
+            // Very low morning consumption - pre-discharge won't help much
+            howToFix.push('     ⚠️  Pre-discharge WON\'T help much:');
+            howToFix.push(`     Your morning consumption: only ${fmt(avgEarlyMorningLoad, 1)} kWh/day (6am-10am)`);
+            howToFix.push(`     Battery usable capacity: ${fmt(usableCapacity, 1)} kWh`);
+            howToFix.push('     → Not enough load to drain battery before solar starts');
+            howToFix.push('     → Additional battery capacity may be the only option');
+          }
+        } else {
+          howToFix.push('');
+          howToFix.push('  Battery fills in afternoon - additional capacity WOULD help capture more.');
+        }
+      } else if (pctDaysReachedFull < 30) {
+        howToFix.push(`✓ Battery only reaches 100% on ${fmt(pctDaysReachedFull, 0)}% of days`);
+        howToFix.push('  → Battery capacity is NOT the limiting factor');
+        howToFix.push('');
+        howToFix.push('  Check these settings:');
+        howToFix.push('  1. Ensure "Charge from Solar" / "Self-consumption" is enabled');
+        howToFix.push('  2. Check if there\'s a charge limit (e.g., 80%) set');
+        howToFix.push('  3. Verify inverter/battery communication is working');
+      } else {
+        howToFix.push('1. Check battery charge settings - ensure "Charge from Solar" is enabled');
+        howToFix.push('2. Verify no charge limit is set too low');
+        howToFix.push('3. Review any "grid charge" schedules that might fill battery before solar peak');
+      }
+
+      issues.push({
+        severity: potentialCapture > 3 ? 'medium' : 'low',
+        issue: `Exporting ${fmt(avgExport, 1)} kWh/day while battery only captures ${fmt(avgSolarCharge, 1)} kWh/day from solar`,
+        impact: `Could store more solar instead of exporting at low feed-in rate ($${fmt(feedInRate, 2)}/kWh)`,
+        annualValue: annualValue,
+        howToFix
+      });
+    }
+  }
+
+  // Sort by annual value (highest first)
+  issues.sort((a, b) => b.annualValue - a.annualValue);
+
+  return issues;
+}
+
+function printOptimizationRecommendations(analysis: Analysis): void {
+  const issues = generateOptimizationRecommendations(analysis);
+
+  if (issues.length === 0) {
+    console.log('\n✅ BATTERY OPTIMIZATION');
+    console.log('═'.repeat(95));
+    console.log('  No significant optimization issues detected. Battery appears well-configured!');
+    return;
+  }
+
+  const totalAnnualValue = issues.reduce((sum, i) => sum + i.annualValue, 0);
+
+  console.log('\n🔧 BATTERY OPTIMIZATION RECOMMENDATIONS');
+  console.log('═'.repeat(95));
+  console.log(`  Total potential savings from optimization: $${fmt(totalAnnualValue, 0)}/year`);
+  console.log('  (This is FREE money - no hardware purchase required!)\n');
+
+  for (let i = 0; i < issues.length; i++) {
+    const issue = issues[i];
+    if (!issue) continue;
+
+    const severityIcon = issue.severity === 'high' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🟢';
+    const severityLabel = issue.severity.toUpperCase();
+
+    console.log(`  ${severityIcon} ISSUE ${i + 1}: ${issue.issue}`);
+    console.log(`     Severity: ${severityLabel} | Potential value: $${fmt(issue.annualValue, 0)}/year`);
+    console.log(`     Impact: ${issue.impact}`);
+    console.log('');
+    console.log('     HOW TO FIX:');
+    for (const step of issue.howToFix) {
+      console.log(`       ${step}`);
+    }
+    console.log('');
+    console.log('─'.repeat(95));
+  }
+
+  // Summary comparison
+  console.log('\n  💡 OPTIMIZATION vs NEW BATTERY COMPARISON');
+  console.log('─'.repeat(95));
+  console.log(`     Fix current battery settings:  +$${fmt(totalAnnualValue, 0)}/year (FREE)`);
+
+  // Calculate what a new battery would add - use the same logic as modelBatteryScenarios
+  // Get the pre-calculated scenario value for consistency
+  const scenarios = modelBatteryScenarios(analysis);
+  const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
+  const newBatteryAnnual = plusOneBattery ? plusOneBattery.annualSavings : 0;
+
+  console.log(`     Buy additional ${BATTERY_SIZE_KWH}kWh battery:    +$${fmt(newBatteryAnnual, 0)}/year (costs $${BATTERY_COST})`);
+  console.log('');
+
+  if (totalAnnualValue > newBatteryAnnual * 0.5) {
+    console.log('     ⚠️  RECOMMENDATION: Fix settings FIRST before considering new hardware!');
+    console.log('        The optimization savings are significant compared to new battery value.');
+  }
+
+  // Check for off-peak discharge issue and provide detailed tradeoff analysis
+  const offpeakDischargeIssue = issues.find(i => i.issue.includes('off-peak periods'));
+  if (offpeakDischargeIssue) {
+    const offpeakDischargeDaily = (analysis.overall.batteryDischargeTOU.offpeak ?? 0) / analysis.overall.days;
+    const peakDischargeDaily = (analysis.overall.batteryDischargeTOU.peak ?? 0) / analysis.overall.days;
+    const peakImportDaily = (analysis.overall.importByTOU.peak ?? 0) / analysis.overall.days;
+
+    // Get rates for tradeoff calculation
+    const compPeakRate = getRateForPeriod('peak');
+    const compOffpeakRate = getRateForPeriod('offpeak');
+
+    // Calculate the actual tradeoff
+    const offpeakSavingsPerKwh = compOffpeakRate;  // What we save by not importing off-peak
+    const peakSavingsPerKwh = compPeakRate;        // What we'd save by not importing peak
+
+    // How much off-peak discharge could be redirected to peak?
+    const redirectableToSpeak = Math.min(offpeakDischargeDaily, peakImportDaily);
+    const dailyBenefit = redirectableToSpeak * (peakSavingsPerKwh - offpeakSavingsPerKwh);
+    const annualBenefit = dailyBenefit * 365;
+
+    console.log('\n  📊 OFF-PEAK DISCHARGE TRADEOFF ANALYSIS');
+    console.log('─'.repeat(95));
+    console.log(`     Current behavior:`);
+    console.log(`        Off-peak discharge:    ${fmt(offpeakDischargeDaily, 1)} kWh/day (saves $${fmt(offpeakDischargeDaily * compOffpeakRate, 2)}/day at $${fmt(compOffpeakRate, 2)}/kWh)`);
+    console.log(`        Peak discharge:        ${fmt(peakDischargeDaily, 1)} kWh/day (saves $${fmt(peakDischargeDaily * compPeakRate, 2)}/day at $${fmt(compPeakRate, 2)}/kWh)`);
+    console.log(`        Remaining peak import: ${fmt(peakImportDaily, 1)} kWh/day (costs $${fmt(peakImportDaily * compPeakRate, 2)}/day)`);
+    console.log('');
+    console.log(`     If ${fmt(redirectableToSpeak, 1)} kWh/day redirected from off-peak → peak:`);
+    console.log(`        Pay for off-peak from grid:  +$${fmt(redirectableToSpeak * compOffpeakRate, 2)}/day (at cheap off-peak rate)`);
+    console.log(`        Save on peak imports:        -$${fmt(redirectableToSpeak * compPeakRate, 2)}/day (avoid expensive peak rate)`);
+    console.log(`        ─────────────────────────────────────────`);
+    console.log(`        Net benefit:                 $${fmt(dailyBenefit, 2)}/day = $${fmt(annualBenefit, 0)}/year`);
+    console.log('');
+
+    if (annualBenefit > 50) {
+      console.log('     ✓  VERDICT: Redirecting discharge to peak IS more economical.');
+      console.log(`        Peak rate ($${fmt(compPeakRate, 2)}) > Off-peak rate ($${fmt(compOffpeakRate, 2)}), so prioritizing peak saves money.`);
+    } else {
+      console.log('     ℹ️  Tradeoff is minimal - current behavior may be acceptable.');
+    }
+
+    console.log('\n  🔌 BACKUP POWER CONSIDERATION');
+    console.log('─'.repeat(95));
+    console.log('     Off-peak discharge depletes battery BEFORE the evening peak.');
+    console.log('     This means LESS reserve available when:');
+    console.log('        • Grid stress is highest (outages more likely)');
+    console.log('        • Family is home and needs power (evening)');
+    console.log('');
+    console.log('     ✓  Reserving battery for peak ALSO improves backup reliability!');
+    console.log('');
+    console.log('     💡 RECOMMENDED APPROACH:');
+    console.log('        • Set "Battery Discharge Time Control" to prioritize peak hours');
+    console.log('        • Keep a minimum reserve (20-30%) for backup if desired');
+    console.log('        • Battery will still power loads during off-peak, just won\'t aggressively drain');
+  }
+
+  // Address environmental considerations with actual carbon calculations
+  console.log('\n  🌱 CARBON IMPACT ANALYSIS');
+  console.log('─'.repeat(95));
+
+  // Australian grid carbon intensity estimates (g CO2/kWh)
+  // Source: Australian Energy Market Operator (AEMO) data
+  // VIC/SA grid is coal-heavy, especially at night
+  const GRID_CARBON_DAYTIME = 450;   // g CO2/kWh - lower due to solar on grid
+  const GRID_CARBON_NIGHT = 750;     // g CO2/kWh - higher coal baseload at night
+  const GRID_CARBON_PEAK = 600;      // g CO2/kWh - gas peakers + coal
+
+  // Calculate actual carbon flows from their data
+  const carbonAvgExport = analysis.overall.gridExport / analysis.overall.days;
+  const carbonAvgGridCharge = analysis.overall.chargeFromGrid / analysis.overall.days;
+  const carbonAvgSolarCharge = analysis.overall.chargeFromSolar / analysis.overall.days;
+  const carbonAvgPeakImport = (analysis.overall.importByTOU.peak ?? 0) / analysis.overall.days;
+  const carbonAvgOffpeakImport = (analysis.overall.importByTOU.offpeak ?? 0) / analysis.overall.days;
+
+  // Carbon saved by solar export (displaces grid generation)
+  const carbonSavedByExport = carbonAvgExport * GRID_CARBON_DAYTIME / 1000;  // kg CO2/day
+
+  // Carbon from grid imports
+  const carbonFromPeakImport = carbonAvgPeakImport * GRID_CARBON_PEAK / 1000;
+  const carbonFromOffpeakImport = carbonAvgOffpeakImport * GRID_CARBON_NIGHT / 1000;
+  const totalCarbonImport = carbonFromPeakImport + carbonFromOffpeakImport;
+
+  // Battery carbon: solar charge is clean, grid charge has carbon cost
+  const batteryCleanPercent = (carbonAvgSolarCharge + carbonAvgGridCharge) > 0
+    ? (carbonAvgSolarCharge / (carbonAvgSolarCharge + carbonAvgGridCharge)) * 100
+    : 100;
+  const carbonFromGridCharge = carbonAvgGridCharge * GRID_CARBON_NIGHT / 1000;  // Grid charge usually overnight
+
+  // Net carbon position
+  const netCarbonDaily = totalCarbonImport + carbonFromGridCharge - carbonSavedByExport;
+  const netCarbonAnnual = netCarbonDaily * 365;
+
+  console.log('     YOUR CARBON FOOTPRINT (based on actual usage data):');
+  console.log('');
+  console.log(`     Solar export to grid:       ${fmt(carbonAvgExport, 1)} kWh/day`);
+  console.log(`        → Displaces grid power:  -${fmt(carbonSavedByExport, 1)} kg CO2/day saved`);
+  console.log('');
+  console.log(`     Grid imports:`);
+  console.log(`        Peak imports:            ${fmt(carbonAvgPeakImport, 1)} kWh/day → +${fmt(carbonFromPeakImport, 1)} kg CO2/day`);
+  console.log(`        Off-peak imports:        ${fmt(carbonAvgOffpeakImport, 1)} kWh/day → +${fmt(carbonFromOffpeakImport, 1)} kg CO2/day`);
+  console.log('');
+  console.log(`     Battery charging:`);
+  console.log(`        From solar (clean):      ${fmt(carbonAvgSolarCharge, 1)} kWh/day (${fmt(batteryCleanPercent, 0)}% of charge)`);
+  console.log(`        From grid (night):       ${fmt(carbonAvgGridCharge, 1)} kWh/day → +${fmt(carbonFromGridCharge, 1)} kg CO2/day`);
+  console.log('');
+  console.log('     ─────────────────────────────────────────────────────────────');
+  if (netCarbonDaily < 0) {
+    console.log(`     NET CARBON:                 ${fmt(Math.abs(netCarbonDaily), 1)} kg CO2/day NEGATIVE (you're carbon positive!)`);
+    console.log(`                                 ${fmt(Math.abs(netCarbonAnnual), 0)} kg CO2/year saved`);
+  } else {
+    console.log(`     NET CARBON:                 +${fmt(netCarbonDaily, 1)} kg CO2/day`);
+    console.log(`                                 +${fmt(netCarbonAnnual, 0)} kg CO2/year`);
+  }
+
+  // Analysis of what adding more battery would do for carbon
+  console.log('');
+  console.log('     📊 WOULD MORE BATTERY HELP THE ENVIRONMENT?');
+  console.log('');
+
+  if (carbonAvgGridCharge > 0.5) {
+    const gridChargeCarbon = carbonAvgGridCharge * GRID_CARBON_NIGHT * 365 / 1000;
+    console.log(`     ⚠️  You charge ${fmt(carbonAvgGridCharge, 1)} kWh/day from GRID (mostly overnight)`);
+    console.log(`        This adds ${fmt(gridChargeCarbon, 0)} kg CO2/year (night grid is ${GRID_CARBON_NIGHT}g CO2/kWh)`);
+    console.log('');
+    console.log('        Grid arbitrage (charge off-peak → discharge peak) is NOT green:');
+    console.log(`        • Off-peak grid is coal-heavy (${GRID_CARBON_NIGHT}g vs ${GRID_CARBON_PEAK}g peak)`);
+    console.log('        • You\'re storing "dirty" night power to use during "cleaner" day');
+  }
+
+  if (carbonAvgExport > 2) {
+    console.log('');
+    console.log(`     ✓  You export ${fmt(carbonAvgExport, 1)} kWh/day - this IS helping the grid go green`);
+    console.log('        Solar export during daytime displaces fossil generation');
+    console.log('        Capturing more of this in battery is carbon-neutral (not better, not worse)');
+  }
+
+  // Verdict
+  console.log('');
+  console.log('     VERDICT:');
+  if (carbonAvgGridCharge > carbonAvgSolarCharge * 0.3) {
+    console.log('        → Reduce GRID charging to improve carbon footprint');
+    console.log('        → Prioritize solar capture over grid arbitrage');
+  } else if (carbonAvgExport > carbonAvgSolarCharge) {
+    console.log('        → Your solar export already helps the grid');
+    console.log('        → More battery for solar capture = carbon neutral');
+    console.log('        → More battery for grid arbitrage = INCREASES carbon');
+  } else {
+    console.log('        → Your system is well-optimized for carbon');
+    console.log('        → Focus on reducing overall consumption for more impact');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1524,6 +2115,7 @@ function main() {
   // Battery Utilization Report (Phase 2: Ground truth from power data)
   if (analysis.hasPowerData) {
     printBatteryUtilizationReport(analysis);
+    printOptimizationRecommendations(analysis);
   }
 
   // Battery Efficiency / Degradation
