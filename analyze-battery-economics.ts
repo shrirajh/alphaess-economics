@@ -2428,12 +2428,13 @@ function printOptimizationRecommendations(stats: Stats, analysis: Analysis, para
     console.log('\n📦 HARDWARE CONSIDERATIONS (requires purchase)');
     console.log('═'.repeat(95));
 
-    // Get the payback period from the first hardware issue if available
+    // Get modeled value for additional battery
     const scenarios = modelBatteryScenarios(analysis, params);
     const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
-    const paybackYears = plusOneBattery ? plusOneBattery.paybackYears : 0;
+    const modeledValue = plusOneBattery?.annualSavings ?? 0;
+    const paybackYears = plusOneBattery?.paybackYears ?? Infinity;
 
-    console.log(`  Potential additional value: $${fmt(hardwareTotal, 0)}/year`);
+    console.log(`  Additional battery value: $${fmt(modeledValue, 0)}/year (modeled)`);
     if (paybackYears > 15) {
       console.log(`  ⚠️  Payback period: ${fmt(paybackYears, 1)} years (exceeds battery lifespan)`);
     } else if (paybackYears > 0) {
@@ -2441,9 +2442,17 @@ function printOptimizationRecommendations(stats: Stats, analysis: Analysis, para
     }
     console.log('');
 
-    let issueNum = 1;
+    // Print hardware items as observations, not actionable issues
     for (const issue of hardwareIssues) {
-      printIssue(issue, issueNum++);
+      console.log(`  📊 OBSERVATION: ${issue.issue}`);
+      console.log(`     ${issue.impact}`);
+      console.log('');
+      console.log('     ANALYSIS:');
+      for (const step of issue.howToFix) {
+        console.log(`       ${step}`);
+      }
+      console.log('');
+      console.log('─'.repeat(95));
     }
   }
 
