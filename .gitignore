@@ -7,3 +7,4 @@ solar-report-*.html
 cache/
 recommended-config-*.json
 backups/
+report-viewer.js
