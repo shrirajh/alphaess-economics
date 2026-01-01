@@ -348,7 +348,9 @@ function renderTariffSection(report: Report): string {
   if (feedInPeriods && Object.keys(feedInPeriods).length > 0) {
     feedInHtml = '<tr><td colspan="2" class="section-subhead">Feed-in Tariff (TOU)</td></tr>';
     for (const dayType of Object.keys(feedInPeriods)) {
-      for (const p of feedInPeriods[dayType]) {
+      const periods = feedInPeriods[dayType];
+      if (!periods) continue;
+      for (const p of periods) {
         feedInHtml += `<tr><td>&nbsp;&nbsp;${p.name}</td><td class="numeric">$${p.rate.toFixed(4)}/kWh</td></tr>`;
       }
     }
@@ -1638,28 +1640,6 @@ async function renderTOUPieChart(report: Report, container: string, type: 'impor
           }
         },
         transform: [{ calculate: "datum.pct + '%'", as: 'pctLabel' }]
-      }
-    ]
-  };
-
-  // Add percentage labels
-  const specWithLabels = {
-    ...spec,
-    layer: [
-      { mark: { type: 'arc', innerRadius: 60, outerRadius: 100 } },
-      {
-        mark: { type: 'text', radius: 130, fontSize: 11 },
-        encoding: {
-          text: { field: 'period', type: 'nominal' },
-          color: { value: '#333' }
-        }
-      },
-      {
-        mark: { type: 'text', radius: 80, fontSize: 12, fontWeight: 'bold' },
-        encoding: {
-          text: { value: '' }  // Will be overridden
-        },
-        transform: [{ calculate: "format(datum.pct, '.0f') + '%'", as: 'label' }]
       }
     ]
   };
