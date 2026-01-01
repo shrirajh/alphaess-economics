@@ -72,8 +72,13 @@ interface SystemInfo {
   cobat?: number;
 }
 
+interface DischargeConfig {
+  batUseCap?: number;  // Battery reserve percentage (e.g., 15 = 15% reserve)
+}
+
 interface SystemData {
   systemInfo?: SystemInfo;
+  dischargeConfig?: DischargeConfig;
   historicalData: HistoricalDay[];
 }
 
@@ -199,6 +204,7 @@ interface SolarDegradation {
 
 interface Analysis {
   currentBatteryKwh: number;
+  configuredReservePercent: number;  // From dischargeConfig.batUseCap (e.g., 15 = 15% reserve)
   dateRange: { start: string; end: string };
   overall: PeriodAnalysis;
   byYear: Map<number, PeriodAnalysis>;
@@ -218,6 +224,11 @@ interface BatteryParameters {
   maxChargeRateKw: number;         // Observed max charging speed
   solarChargingHours: number;      // Non-peak daylight hours for solar charging
   estimatedLifespanYears: number;  // Extrapolated from degradation rate
+
+  // Observed SoC behavior (for display)
+  observedMinSoC: number;          // Average minimum SoC observed
+  observedMaxSoC: number;          // Average maximum SoC observed
+  configuredReservePercent: number; // From dischargeConfig.batUseCap
 
   // Metadata about data quality
   efficiencyDays: number;          // Days of data used for efficiency calc
@@ -684,6 +695,8 @@ function calculateBatteryParameters(analysis: Analysis): BatteryParameters {
   // ═══════════════════════════════════════════════════════════════════════════
   let usableCapacityPercent = USABLE_CAPACITY_PERCENT; // Default
   let socRangeDays = 0;
+  let observedMinSoC = 0;
+  let observedMaxSoC = 100;
 
   // Filter days with valid SoC data (maxSoC > 0 means we have power data)
   const daysWithSoC = analysis.daily.filter(d => d.battery.maxSoC > 0);
@@ -691,11 +704,11 @@ function calculateBatteryParameters(analysis: Analysis): BatteryParameters {
 
   if (socRangeDays >= 30) {
     // Calculate average min and max SoC
-    const avgMinSoC = daysWithSoC.reduce((sum, d) => sum + d.battery.minSoC, 0) / socRangeDays;
-    const avgMaxSoC = daysWithSoC.reduce((sum, d) => sum + d.battery.maxSoC, 0) / socRangeDays;
+    observedMinSoC = daysWithSoC.reduce((sum, d) => sum + d.battery.minSoC, 0) / socRangeDays;
+    observedMaxSoC = daysWithSoC.reduce((sum, d) => sum + d.battery.maxSoC, 0) / socRangeDays;
 
     // Usable capacity is the range we actually use
-    usableCapacityPercent = (avgMaxSoC - avgMinSoC) / 100;
+    usableCapacityPercent = (observedMaxSoC - observedMinSoC) / 100;
 
     // Sanity check
     if (usableCapacityPercent < 0.3 || usableCapacityPercent > 1.0) {
@@ -823,6 +836,9 @@ function calculateBatteryParameters(analysis: Analysis): BatteryParameters {
     maxChargeRateKw,
     solarChargingHours,
     estimatedLifespanYears,
+    observedMinSoC,
+    observedMaxSoC,
+    configuredReservePercent: analysis.configuredReservePercent,
     efficiencyDays,
     socRangeDays,
     lifespanConfidence,
@@ -1116,6 +1132,7 @@ function analyzeHistoricalData(stats: Stats): Analysis {
 
   return {
     currentBatteryKwh: system.systemInfo?.cobat ?? 0,
+    configuredReservePercent: system.dischargeConfig?.batUseCap ?? 0,
     dateRange,
     overall: calculatePeriodAnalysis(overallTotals),
     byYear,
@@ -2255,10 +2272,18 @@ function main() {
     : 'default (no data)';
   console.log(`  Round-trip efficiency:       ${(params.efficiency * 100).toFixed(1)}% (${effSource})`);
 
-  const socSource = params.socRangeDays > 0
-    ? `observed SoC range over ${params.socRangeDays} days`
-    : 'default (no SoC data)';
-  console.log(`  Usable capacity:             ${(params.usableCapacityPercent * 100).toFixed(0)}% (${socSource})`);
+  if (params.socRangeDays > 0) {
+    console.log(`  Usable capacity:             ${(params.usableCapacityPercent * 100).toFixed(0)}% (observed SoC range ${params.observedMinSoC.toFixed(0)}-${params.observedMaxSoC.toFixed(0)}%)`);
+    if (params.configuredReservePercent > 0) {
+      const configuredUsable = 100 - params.configuredReservePercent;
+      const actualVsConfigured = params.observedMinSoC > params.configuredReservePercent
+        ? `typically stays above ${params.configuredReservePercent}% reserve`
+        : `reaches configured ${params.configuredReservePercent}% reserve`;
+      console.log(`                               ↳ Reserve setting: ${params.configuredReservePercent}% (${configuredUsable}% max usable, ${actualVsConfigured})`);
+    }
+  } else {
+    console.log(`  Usable capacity:             ${(params.usableCapacityPercent * 100).toFixed(0)}% (default - no SoC data)`);
+  }
 
   console.log(`  Max charge rate:             ${params.maxChargeRateKw.toFixed(1)} kW`);
   console.log(`  Solar charging window:       ${params.solarChargingHours} hours (non-peak daylight)`);
