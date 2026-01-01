@@ -1924,10 +1924,6 @@ function generateOptimizationRecommendations(analysis: Analysis, params?: Batter
           maxUsefulDischarge / efficiency  // Can only store what you can usefully discharge
         );
 
-        // Value = what we save on peak import - what we lose on feed-in
-        const dischargeable = additionalSolarCapture * efficiency;
-        const captureValue = (dischargeable * peakRate - additionalSolarCapture * feedInRate) * 365;
-
         // Get the actual modeled value from scenarios (more accurate than avg calculation)
         const scenarios = modelBatteryScenarios(analysis, params);
         const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
