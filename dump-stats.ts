@@ -2,12 +2,16 @@ import AlphaESSClient, {
   type GetESSListResponse,
   type EnergySummaryResponse,
   type LastPowerResponse,
-  type ChargeConfigResponse,
-  type DischargeConfigResponse,
   type OneDayPowerResponse,
   type OneDayEnergyResponse,
   type EVChargerListResponse,
 } from 'alphaess-client';
+import {
+  getChargeConfig,
+  getDischargeConfig,
+  type ChargeConfig,
+  type DischargeConfig,
+} from './alphaess-api-helpers.js';
 import * as fs from 'node:fs';
 import 'dotenv/config';
 
@@ -68,8 +72,8 @@ interface SystemData {
   systemInfo: GetESSListResponse[number];
   energySummary: EnergySummaryResponse | null;
   lastPower: LastPowerResponse | null;
-  chargeConfig: ChargeConfigResponse | null;
-  dischargeConfig: DischargeConfigResponse | null;
+  chargeConfig: ChargeConfig | null;
+  dischargeConfig: DischargeConfig | null;
   historicalData: HistoricalDataEntry[];
   evChargers: EVChargerListResponse | null;
   lastUpdated: string;
@@ -180,19 +184,19 @@ async function dumpAllStats(): Promise<void> {
         errors.push({ endpoint: 'getLastPowerData', error: getErrorMessage(e), timestamp: new Date().toISOString() });
       }
 
-      // Charge Config
+      // Charge Config (using fixed API helper - library has bug)
       try {
         console.log('  → Fetching charge configuration...');
-        systemData.chargeConfig = await client.getChargeConfigInfo(system.sysSn);
+        systemData.chargeConfig = await getChargeConfig(client, system.sysSn);
         await sleep(2000);
       } catch (e) {
         errors.push({ endpoint: 'getChargeConfigInfo', error: getErrorMessage(e), timestamp: new Date().toISOString() });
       }
 
-      // Discharge Config
+      // Discharge Config (using fixed API helper for consistency)
       try {
         console.log('  → Fetching discharge configuration...');
-        systemData.dischargeConfig = await client.getDisChargeConfigInfo(system.sysSn);
+        systemData.dischargeConfig = await getDischargeConfig(client, system.sysSn);
         await sleep(2000);
       } catch (e) {
         errors.push({ endpoint: 'getDisChargeConfigInfo', error: getErrorMessage(e), timestamp: new Date().toISOString() });
@@ -323,6 +327,25 @@ async function dumpAllStats(): Promise<void> {
         console.log(`  Load: ${systemData.lastPower.pload}W`);
         console.log(`  Battery: ${systemData.lastPower.pbat}W (${systemData.lastPower.soc}% SOC)`);
         console.log(`  Grid: ${systemData.lastPower.pgrid}W ${systemData.lastPower.pgrid > 0 ? '(importing)' : '(exporting)'}`);
+      }
+
+      // Display charge/discharge config
+      if (systemData.dischargeConfig) {
+        const dc = systemData.dischargeConfig;
+        console.log(`\nDischarge Config:`);
+        console.log(`  Control: ${dc.ctrDis === 1 ? 'ENABLED' : 'DISABLED'}`);
+        console.log(`  Period 1: ${dc.timeDisf1}-${dc.timeDise1}`);
+        console.log(`  Period 2: ${dc.timeDisf2}-${dc.timeDise2}`);
+        console.log(`  Reserve: ${dc.batUseCap}%`);
+      }
+
+      if (systemData.chargeConfig) {
+        const cc = systemData.chargeConfig;
+        console.log(`\nCharge Config:`);
+        console.log(`  Grid Charge: ${cc.gridCharge === 1 ? 'ENABLED' : 'DISABLED'}`);
+        console.log(`  Period 1: ${cc.timeChaf1}-${cc.timeChae1}`);
+        console.log(`  Period 2: ${cc.timeChaf2}-${cc.timeChae2}`);
+        console.log(`  Max Charge: ${cc.batHighCap}%`);
       }
     }
   } catch (e) {
