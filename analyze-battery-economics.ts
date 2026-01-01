@@ -1536,28 +1536,79 @@ function generateOptimizationRecommendations(analysis: Analysis): OptimizationIs
 
   const peakHoursDesc = formatPeakHours(peakHours ?? []);
 
-  // Issue 1: Off-peak discharge waste
+  // Issue 1: Battery discharge timing (UNIFIED analysis)
   const offpeakDischarge = analysis.overall.batteryDischargeTOU.offpeak ?? 0;
+  const shoulderDischarge = analysis.overall.batteryDischargeTOU.shoulder ?? 0;
   const peakDischarge = analysis.overall.batteryDischargeTOU.peak ?? 0;
-  const totalDischarge = offpeakDischarge + peakDischarge + (analysis.overall.batteryDischargeTOU.shoulder ?? 0);
+  const totalDischarge = offpeakDischarge + peakDischarge + shoulderDischarge;
 
-  if (offpeakDischarge > 0 && totalDischarge > 0) {
+  // What peak import still remains? (this is what we COULD offset)
+  const peakImport = analysis.overall.importByTOU.peak ?? 0;
+
+  if (totalDischarge > 0) {
     const offpeakDischargePercent = (offpeakDischarge / totalDischarge) * 100;
-    const annualWaste = (offpeakDischarge / analysis.overall.days) * 365 * (peakRate - offpeakRate);
+    const peakDischargePercent = (peakDischarge / totalDischarge) * 100;
+    const shoulderDischargePercent = (shoulderDischarge / totalDischarge) * 100;
 
-    if (offpeakDischargePercent > 20 || annualWaste > 50) {
+    // Daily averages
+    const offpeakDischargeDaily = offpeakDischarge / analysis.overall.days;
+    const peakDischargeDaily = peakDischarge / analysis.overall.days;
+    const peakImportDaily = peakImport / analysis.overall.days;
+    const totalDischargeDaily = totalDischarge / analysis.overall.days;
+
+    // How much off-peak discharge COULD be redirected to peak?
+    // Limited by: remaining peak import (can't discharge more than you'd import)
+    const redirectable = Math.min(offpeakDischargeDaily, peakImportDaily);
+    const redirectValue = redirectable * (peakRate - offpeakRate) * 365;
+
+    if (offpeakDischargePercent > 20 && redirectValue > 50) {
+      const howToFix: string[] = [];
+
+      howToFix.push('📊 CURRENT DISCHARGE BREAKDOWN:');
+      howToFix.push(`   Peak (${peakHoursDesc}):     ${fmt(peakDischargeDaily, 1)} kWh/day (${fmt(peakDischargePercent, 0)}%)`);
+      if (shoulderDischargePercent > 1) {
+        howToFix.push(`   Shoulder:                   ${fmt(shoulderDischarge / analysis.overall.days, 1)} kWh/day (${fmt(shoulderDischargePercent, 0)}%)`);
+      }
+      howToFix.push(`   Off-peak:                   ${fmt(offpeakDischargeDaily, 1)} kWh/day (${fmt(offpeakDischargePercent, 0)}%) ⚠️`);
+      howToFix.push(`   Total:                      ${fmt(totalDischargeDaily, 1)} kWh/day`);
+      howToFix.push('');
+
+      // Analyze WHY off-peak discharge is happening
+      howToFix.push('❓ WHY IS BATTERY DISCHARGING DURING OFF-PEAK?');
+
+      if (peakImportDaily > 0.5) {
+        // Still importing during peak = battery discharging at wrong time
+        howToFix.push(`   → You still import ${fmt(peakImportDaily, 1)} kWh/day during PEAK`);
+        howToFix.push(`   → But battery discharges ${fmt(offpeakDischargeDaily, 1)} kWh/day during OFF-PEAK`);
+        howToFix.push(`   → Battery is discharging at the WRONG TIME`);
+        howToFix.push(`   → Likely cause: "Self-Consumption" mode ignores TOU rates`);
+        howToFix.push('');
+        howToFix.push('💰 VALUE OF FIXING THIS:');
+        howToFix.push(`   Redirect ${fmt(redirectable, 1)} kWh/day from off-peak → peak:`);
+        howToFix.push(`   • Currently saves:  $${fmt(redirectable * offpeakRate, 2)}/day (off-peak rate $${fmt(offpeakRate, 2)})`);
+        howToFix.push(`   • Could save:       $${fmt(redirectable * peakRate, 2)}/day (peak rate $${fmt(peakRate, 2)})`);
+        howToFix.push(`   • Extra value:      $${fmt(redirectable * (peakRate - offpeakRate), 2)}/day = $${fmt(redirectValue, 0)}/year`);
+      } else {
+        howToFix.push(`   → Peak import is only ${fmt(peakImportDaily, 1)} kWh/day (already mostly covered)`);
+        howToFix.push(`   → Off-peak discharge is powering your off-peak consumption`);
+        howToFix.push(`   → This is self-consumption, not waste - limited room for improvement`);
+      }
+
+      howToFix.push('');
+      howToFix.push('🔧 HOW TO FIX:');
+      howToFix.push('   1. Open AlphaESS app → Settings → Function Setting');
+      howToFix.push('   2. Enable "Battery Discharge Time Control"');
+      howToFix.push(`   3. Set discharge period to: ${peakHoursDesc}`);
+      howToFix.push('   4. This tells battery to PRIORITIZE peak hours');
+      howToFix.push('   5. Battery will still power loads from solar during off-peak');
+      howToFix.push('      but won\'t drain stored energy until peak hours');
+
       issues.push({
         severity: offpeakDischargePercent > 40 ? 'high' : 'medium',
-        issue: `Battery discharging during off-peak periods (${fmt(offpeakDischargePercent, 0)}% of total discharge)`,
-        impact: `${fmt(offpeakDischarge / analysis.overall.days, 1)} kWh/day discharged when electricity is cheap`,
-        annualValue: annualWaste,
-        howToFix: [
-          '1. Open AlphaESS app → Settings → Function Setting',
-          '2. Enable "Battery Discharge Time Control"',
-          `3. Set discharge period to ONLY ${peakHoursDesc}`,
-          '4. This prevents the battery from discharging during cheap off-peak periods',
-          '5. Save settings and monitor for a few days'
-        ]
+        issue: `Battery discharge timing: ${fmt(peakDischargePercent, 0)}% peak vs ${fmt(offpeakDischargePercent, 0)}% off-peak`,
+        impact: `Discharging ${fmt(offpeakDischargeDaily, 1)} kWh/day during cheap off-peak while still importing ${fmt(peakImportDaily, 1)} kWh/day during expensive peak`,
+        annualValue: redirectValue,
+        howToFix
       });
     }
   }
@@ -1582,28 +1633,6 @@ function generateOptimizationRecommendations(analysis: Analysis): OptimizationIs
           '3. Set charging period to ONLY off-peak hours (typically overnight)',
           '4. Disable any "force charge" settings during peak hours',
           '5. Consider setting a charge limit (e.g., charge to 80%) to leave room for solar'
-        ]
-      });
-    }
-  }
-
-  // Issue 3: Low peak discharge ratio (battery not targeting peak)
-  if (totalDischarge > 0 && peakDischarge / totalDischarge < 0.6) {
-    const peakRatio = (peakDischarge / totalDischarge) * 100;
-    const idealPeakDischarge = totalDischarge * 0.8;  // Target 80% to peak
-    const missedValue = (idealPeakDischarge - peakDischarge) / analysis.overall.days * 365 * (peakRate - offpeakRate);
-
-    if (missedValue > 50) {
-      issues.push({
-        severity: peakRatio < 40 ? 'high' : 'medium',
-        issue: `Only ${fmt(peakRatio, 0)}% of battery discharge goes to peak periods`,
-        impact: `Battery not targeting expensive periods effectively`,
-        annualValue: missedValue,
-        howToFix: [
-          '1. Check if battery is in "Self-Consumption" mode (this ignores TOU rates)',
-          '2. Switch to "Time-of-Use" or "TOU" mode if available',
-          `3. Set discharge schedule to ${peakHoursDesc}`,
-          '4. In AlphaESS: Settings → Battery Discharge Time Control → Set peak hours only'
         ]
       });
     }
@@ -1713,35 +1742,51 @@ function generateOptimizationRecommendations(analysis: Analysis): OptimizationIs
 
           // Check if morning consumption is high enough for pre-discharge strategy
           const avgEarlyMorningLoad = analysis.overall.earlyMorningLoad / analysis.overall.days;
-          const usableCapacity = batteryCapacity * USABLE_CAPACITY_PERCENT;
+          // Note: batteryCapacity already has USABLE_CAPACITY_PERCENT applied (line 1644)
+          const nominalCapacity = analysis.currentBatteryKwh;
 
-          if (avgEarlyMorningLoad >= usableCapacity * 0.5) {
-            // Enough morning consumption to drain battery
-            howToFix.push('     FREE alternative: Pre-discharge during morning (6-10am)');
-            howToFix.push(`     Your morning consumption: ${fmt(avgEarlyMorningLoad, 1)} kWh/day (6am-10am)`);
-            howToFix.push(`     Battery usable capacity: ${fmt(usableCapacity, 1)} kWh`);
-            howToFix.push(`     → ${fmt(avgEarlyMorningLoad / usableCapacity * 100, 0)}% of battery could drain before solar peak`);
-            howToFix.push('     → Set "Battery Discharge Time Control" to include 6:00-10:00');
-            howToFix.push('     → Battery has room for solar when generation ramps up');
-          } else if (avgEarlyMorningLoad >= 1) {
-            // Some morning consumption, partial pre-discharge possible
-            howToFix.push('     PARTIAL pre-discharge possible during morning (6-10am)');
-            howToFix.push(`     Your morning consumption: ${fmt(avgEarlyMorningLoad, 1)} kWh/day (6am-10am)`);
-            howToFix.push(`     Battery usable capacity: ${fmt(usableCapacity, 1)} kWh`);
-            howToFix.push(`     → Only ${fmt(avgEarlyMorningLoad / usableCapacity * 100, 0)}% of battery would drain`);
-            howToFix.push('     → Pre-discharge helps but won\'t fully empty battery');
-            howToFix.push('     → Consider if additional battery is worth the partial gain');
+          howToFix.push('');
+          howToFix.push('  📊 MORNING (6-10am) ANALYSIS:');
+          howToFix.push(`     Your morning consumption:    ${fmt(avgEarlyMorningLoad, 1)} kWh/day`);
+          howToFix.push(`     Battery capacity:            ${fmt(nominalCapacity, 1)} kWh`);
+
+          // Calculate what % of battery morning load would drain
+          const drainPercent = (avgEarlyMorningLoad / nominalCapacity) * 100;
+
+          if (drainPercent >= 50) {
+            // Enough morning consumption to significantly drain battery
+            howToFix.push(`     Potential drain:             ${fmt(drainPercent, 0)}% of battery`);
+            howToFix.push('');
+            howToFix.push('  ✓  PRE-DISCHARGE STRATEGY VIABLE:');
+            howToFix.push('     Currently: Battery is full overnight → fills early → exports excess');
+            howToFix.push('     With pre-discharge: Battery powers morning load → has room for solar');
+            howToFix.push('');
+            howToFix.push('  🔧 HOW TO IMPLEMENT:');
+            howToFix.push('     1. Set "Battery Discharge Time Control" to include 6:00-10:00');
+            howToFix.push('     2. Battery will power your morning consumption');
+            howToFix.push(`     3. This creates ~${fmt(avgEarlyMorningLoad, 1)} kWh headroom for solar`);
+            howToFix.push('     4. More solar captured = less wasted export');
+          } else if (drainPercent >= 20) {
+            // Some morning consumption, partial benefit
+            howToFix.push(`     Potential drain:             ${fmt(drainPercent, 0)}% of battery`);
+            howToFix.push('');
+            howToFix.push('  ⚠️  PARTIAL PRE-DISCHARGE POSSIBLE:');
+            howToFix.push(`     Morning load would only drain ${fmt(drainPercent, 0)}% of battery`);
+            howToFix.push(`     Creates ${fmt(avgEarlyMorningLoad, 1)} kWh headroom, but battery still mostly full`);
+            howToFix.push('     May help capture some extra solar, but limited benefit');
           } else {
-            // Very low morning consumption - pre-discharge won't help much
-            howToFix.push('     ⚠️  Pre-discharge WON\'T help much:');
-            howToFix.push(`     Your morning consumption: only ${fmt(avgEarlyMorningLoad, 1)} kWh/day (6am-10am)`);
-            howToFix.push(`     Battery usable capacity: ${fmt(usableCapacity, 1)} kWh`);
-            howToFix.push('     → Not enough load to drain battery before solar starts');
-            howToFix.push('     → Additional battery capacity may be the only option');
+            // Very low morning consumption - pre-discharge won't help
+            howToFix.push(`     Potential drain:             only ${fmt(drainPercent, 0)}% of battery`);
+            howToFix.push('');
+            howToFix.push('  ❌  PRE-DISCHARGE WON\'T HELP:');
+            howToFix.push('     Your morning consumption is too low to drain the battery');
+            howToFix.push('     Battery will still be nearly full when solar ramps up');
+            howToFix.push('     → Additional battery capacity is the only solution for more capture');
           }
         } else {
           howToFix.push('');
-          howToFix.push('  Battery fills in afternoon - additional capacity WOULD help capture more.');
+          howToFix.push('  ✓  Battery fills in AFTERNOON (after solar peak)');
+          howToFix.push('     Additional capacity WOULD help capture more solar.');
         }
       } else if (pctDaysReachedFull < 30) {
         howToFix.push(`✓ Battery only reaches 100% on ${fmt(pctDaysReachedFull, 0)}% of days`);
@@ -1828,47 +1873,9 @@ function printOptimizationRecommendations(analysis: Analysis): void {
     console.log('        The optimization savings are significant compared to new battery value.');
   }
 
-  // Check for off-peak discharge issue and provide detailed tradeoff analysis
-  const offpeakDischargeIssue = issues.find(i => i.issue.includes('off-peak periods'));
-  if (offpeakDischargeIssue) {
-    const offpeakDischargeDaily = (analysis.overall.batteryDischargeTOU.offpeak ?? 0) / analysis.overall.days;
-    const peakDischargeDaily = (analysis.overall.batteryDischargeTOU.peak ?? 0) / analysis.overall.days;
-    const peakImportDaily = (analysis.overall.importByTOU.peak ?? 0) / analysis.overall.days;
-
-    // Get rates for tradeoff calculation
-    const compPeakRate = getRateForPeriod('peak');
-    const compOffpeakRate = getRateForPeriod('offpeak');
-
-    // Calculate the actual tradeoff
-    const offpeakSavingsPerKwh = compOffpeakRate;  // What we save by not importing off-peak
-    const peakSavingsPerKwh = compPeakRate;        // What we'd save by not importing peak
-
-    // How much off-peak discharge could be redirected to peak?
-    const redirectableToSpeak = Math.min(offpeakDischargeDaily, peakImportDaily);
-    const dailyBenefit = redirectableToSpeak * (peakSavingsPerKwh - offpeakSavingsPerKwh);
-    const annualBenefit = dailyBenefit * 365;
-
-    console.log('\n  📊 OFF-PEAK DISCHARGE TRADEOFF ANALYSIS');
-    console.log('─'.repeat(95));
-    console.log(`     Current behavior:`);
-    console.log(`        Off-peak discharge:    ${fmt(offpeakDischargeDaily, 1)} kWh/day (saves $${fmt(offpeakDischargeDaily * compOffpeakRate, 2)}/day at $${fmt(compOffpeakRate, 2)}/kWh)`);
-    console.log(`        Peak discharge:        ${fmt(peakDischargeDaily, 1)} kWh/day (saves $${fmt(peakDischargeDaily * compPeakRate, 2)}/day at $${fmt(compPeakRate, 2)}/kWh)`);
-    console.log(`        Remaining peak import: ${fmt(peakImportDaily, 1)} kWh/day (costs $${fmt(peakImportDaily * compPeakRate, 2)}/day)`);
-    console.log('');
-    console.log(`     If ${fmt(redirectableToSpeak, 1)} kWh/day redirected from off-peak → peak:`);
-    console.log(`        Pay for off-peak from grid:  +$${fmt(redirectableToSpeak * compOffpeakRate, 2)}/day (at cheap off-peak rate)`);
-    console.log(`        Save on peak imports:        -$${fmt(redirectableToSpeak * compPeakRate, 2)}/day (avoid expensive peak rate)`);
-    console.log(`        ─────────────────────────────────────────`);
-    console.log(`        Net benefit:                 $${fmt(dailyBenefit, 2)}/day = $${fmt(annualBenefit, 0)}/year`);
-    console.log('');
-
-    if (annualBenefit > 50) {
-      console.log('     ✓  VERDICT: Redirecting discharge to peak IS more economical.');
-      console.log(`        Peak rate ($${fmt(compPeakRate, 2)}) > Off-peak rate ($${fmt(compOffpeakRate, 2)}), so prioritizing peak saves money.`);
-    } else {
-      console.log('     ℹ️  Tradeoff is minimal - current behavior may be acceptable.');
-    }
-
+  // Check for discharge timing issue and show backup power consideration
+  const dischargeTimingIssue = issues.find(i => i.issue.includes('discharge timing'));
+  if (dischargeTimingIssue) {
     console.log('\n  🔌 BACKUP POWER CONSIDERATION');
     console.log('─'.repeat(95));
     console.log('     Off-peak discharge depletes battery BEFORE the evening peak.');
@@ -1878,10 +1885,7 @@ function printOptimizationRecommendations(analysis: Analysis): void {
     console.log('');
     console.log('     ✓  Reserving battery for peak ALSO improves backup reliability!');
     console.log('');
-    console.log('     💡 RECOMMENDED APPROACH:');
-    console.log('        • Set "Battery Discharge Time Control" to prioritize peak hours');
-    console.log('        • Keep a minimum reserve (20-30%) for backup if desired');
-    console.log('        • Battery will still power loads during off-peak, just won\'t aggressively drain');
+    console.log('     💡 BONUS: Fixing discharge timing improves BOTH savings AND backup!');
   }
 
   // Address environmental considerations with actual carbon calculations
