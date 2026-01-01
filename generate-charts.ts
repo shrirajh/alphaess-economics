@@ -3067,7 +3067,7 @@ Options:
 
 Examples:
   npx tsx generate-charts.ts                     # Generate reports for ALL systems
-  npx tsx generate-charts.ts -s XXXX  # Generate for specific system
+  npx tsx generate-charts.ts -s YOUR_SERIAL_NUMBER  # Generate for specific system
 `);
       process.exit(0);
     }
