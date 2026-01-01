@@ -36,20 +36,19 @@ Open `report.html` in a browser and upload the generated `battery-analysis-*.jso
 <tr>
 <td><img width="400" alt="Web Report" src="https://github.com/user-attachments/assets/5b998dc6-e249-4f5e-859a-b2bf40443cdc" /></td>
 <td><img width="400" alt="Web Report" src="https://github.com/user-attachments/assets/a26a806c-e846-4f27-8be6-8d152a633146" /></td>
-</tr>
-<tr>
 <td><img width="400" alt="Web Report" src="https://github.com/user-attachments/assets/1d681897-6d73-4f23-970f-40af18962f51" /></td>
-<td><img width="400" alt="CLI Output" src="https://github.com/user-attachments/assets/9e5c49f9-33c2-4f78-b639-30c143bb37cd" /></td>
 </tr>
 <tr>
+<td><img width="400" alt="CLI Output" src="https://github.com/user-attachments/assets/9e5c49f9-33c2-4f78-b639-30c143bb37cd" /></td>
 <td><img width="400" alt="CLI Output" src="https://github.com/user-attachments/assets/82b8fb7d-e70b-48b4-a0cf-ef6d3a02fad5" /></td>
 <td><img width="400" alt="CLI Output" src="https://github.com/user-attachments/assets/80d3bac8-c0ae-4cd0-aa87-5fe23926fcfd" /></td>
 </tr>
+<tr>
+<td><img width="400" alt="CLI Output" src="https://github.com/user-attachments/assets/1dcfcbdf-cca3-4305-8460-4e8d38873c25" /></td>
+<td><img width="400" alt="Solar Wrapped" src="https://github.com/user-attachments/assets/02443713-752f-4c16-95a9-813b2354e8fd" /></td>
+<td><img width="400" alt="Solar Wrapped" src="https://github.com/user-attachments/assets/74120aff-aafc-48ec-b930-b57e78e147d6" /></td>
+</tr>
 </table>
-
-<img width="2551" height="1386" alt="image" src="https://github.com/user-attachments/assets/02443713-752f-4c16-95a9-813b2354e8fd" />
-<img width="2544" height="1385" alt="image" src="https://github.com/user-attachments/assets/74120aff-aafc-48ec-b930-b57e78e147d6" />
-
 
 ## Tariff Configuration
 
