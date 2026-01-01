@@ -59,6 +59,7 @@ interface EnergyData {
   eOutput?: number;
   eCharge?: number;
   eDischarge?: number;
+  eGridCharge?: number;  // Grid→battery charging (kWh)
 }
 
 interface HistoricalDay {
@@ -103,6 +104,30 @@ interface DailyEntry {
   afternoonPeakImport: number;
   morningPeakExport: number;
   afternoonPeakExport: number;
+  // Battery behavior (from power data and daily aggregates)
+  battery: BatteryBehavior;
+}
+
+interface BatteryBehavior {
+  // Charging sources (kWh)
+  chargeFromSolar: number;       // eCharge - eGridCharge
+  chargeFromGrid: number;        // eGridCharge (from daily data)
+  chargeFromGridByTOU: TOUBreakdown;  // Grid charging by TOU period (from power data)
+
+  // Discharge destinations (kWh) - from power data
+  dischargeToPeak: number;
+  dischargeToShoulder: number;
+  dischargeToOffpeak: number;
+
+  // Utilization (from power data cbat readings)
+  maxSoC: number;               // 0-100
+  minSoC: number;               // 0-100
+  cycleDepth: number;           // max - min
+
+  // Headroom for additional battery
+  solarCapturable: number;      // Export that could have been stored
+  gridChargeable: number;       // Off-peak capacity available for grid charging
+  peakOffsetable: number;       // Peak import that could be offset with more capacity
 }
 
 interface BatteryEfficiencyPeriod {
@@ -125,6 +150,11 @@ interface PeriodTotals {
   importByTOU: TOUBreakdown;
   exportByTOU: TOUBreakdown;
   exportByFeedInPeriod: TOUBreakdown;  // Export bucketed by feed-in tariff periods
+  // Battery behavior aggregates
+  batteryDischargeTOU: TOUBreakdown;   // Discharge kWh by TOU period
+  gridChargeTOU: TOUBreakdown;         // Grid→battery charging by TOU period
+  chargeFromSolar: number;             // Total solar→battery kWh
+  chargeFromGrid: number;              // Total grid→battery kWh (from eGridCharge)
 }
 
 interface PeriodAnalysis extends PeriodTotals {
@@ -182,6 +212,9 @@ interface Scenario {
   paybackYears: number;
   lifetimeSavings: number;
   roi: number;
+  // Value breakdown by arbitrage type
+  solarArbitrageValue: number;    // Annual $ from solar→battery→peak
+  gridArbitrageValue: number;     // Annual $ from grid→battery→peak
 }
 
 interface SavingsComparison {
@@ -202,10 +235,21 @@ interface SavingsComparison {
     totalImportCost: number;
     totalNetCost: number;
   };
+  // What optimal battery control could have achieved
+  optimal: {
+    totalImportCost: number;
+    totalFeedInRevenue: number;
+    totalNetCost: number;
+  };
   // Savings
   savingsFromBattery: number;      // actual vs solar-only
   savingsFromSolar: number;        // solar-only vs no-solar
   totalSavings: number;            // actual vs no-solar
+  // Value attribution
+  solarArbitrageValue: number;     // Solar→battery→peak savings
+  gridArbitrageValue: number;      // Grid→battery→peak savings
+  // Gap analysis
+  optimalGap: number;              // What we left on the table (optimal - actual)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -221,6 +265,11 @@ interface TOUResult {
   afternoonPeakImport: number;
   morningPeakExport: number;
   afternoonPeakExport: number;
+  // Battery behavior tracking
+  batteryDischargeTOU: TOUBreakdown;  // Discharge kWh by TOU period
+  gridChargeTOU: TOUBreakdown;        // Grid→battery charging by TOU period
+  minSoC: number;                     // Minimum battery SoC (0-100)
+  maxSoC: number;                     // Maximum battery SoC (0-100)
 }
 
 // Check if hour is in morning peak (6-10am)
@@ -231,14 +280,18 @@ function isMorningPeak(hour: number): boolean {
 // Calculate TOU breakdown from power readings
 // Power readings are in W, typically every 5 minutes
 // We sum them and convert to approximate kWh
-function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined): TOUResult {
+function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined, batteryCapacityKwh: number = 10): TOUResult {
   const importTOU = emptyTOUBreakdown();
   const exportTOU = emptyTOUBreakdown();
   const exportByFeedInPeriod = emptyFeedInBreakdown();
+  const batteryDischargeTOU = emptyTOUBreakdown();
+  const gridChargeTOU = emptyTOUBreakdown();
   let morningPeakImport = 0;
   let afternoonPeakImport = 0;
   let morningPeakExport = 0;
   let afternoonPeakExport = 0;
+  let minSoC = 100;
+  let maxSoC = 0;
 
   if (!powerReadings || powerReadings.length === 0) {
     return {
@@ -248,7 +301,11 @@ function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined)
       morningPeakImport,
       afternoonPeakImport,
       morningPeakExport,
-      afternoonPeakExport
+      afternoonPeakExport,
+      batteryDischargeTOU,
+      gridChargeTOU,
+      minSoC: 0,
+      maxSoC: 0
     };
   }
 
@@ -307,6 +364,50 @@ function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined)
         afternoonPeakExport += exportKwh;
       }
     }
+
+    // Track battery SoC min/max
+    if (reading.cbat !== undefined && reading.cbat !== null) {
+      minSoC = Math.min(minSoC, reading.cbat);
+      maxSoC = Math.max(maxSoC, reading.cbat);
+    }
+
+    // Track battery discharge by TOU period (when SoC decreases from previous reading)
+    if (i > 0) {
+      const prevReading = sorted[i - 1];
+      if (prevReading && prevReading.cbat !== undefined && reading.cbat !== undefined) {
+        const socDelta = prevReading.cbat - reading.cbat;  // Positive = discharging
+        if (socDelta > 0) {
+          // Battery is discharging - convert SoC % change to kWh
+          const dischargeKwh = (socDelta / 100) * batteryCapacityKwh;
+          batteryDischargeTOU[periodName] = (batteryDischargeTOU[periodName] ?? 0) + dischargeKwh;
+        }
+      }
+    }
+
+    // Track grid charging by TOU period (when importing from grid AND battery charging)
+    // Detect battery charging: cbat increasing from previous reading
+    if (i > 0 && reading.gridCharge > 0) {
+      const prevReading = sorted[i - 1];
+      if (prevReading && prevReading.cbat !== undefined && reading.cbat !== undefined) {
+        const socDelta = reading.cbat - prevReading.cbat;  // Positive = charging
+        if (socDelta > 0) {
+          // Battery is charging while importing from grid
+          // Estimate grid portion: if no solar (ppv ≈ 0) or solar < load, grid is charging battery
+          const solarExcess = reading.ppv - reading.load;
+          if (solarExcess <= 0) {
+            // All charging is from grid
+            const chargeKwh = (socDelta / 100) * batteryCapacityKwh;
+            gridChargeTOU[periodName] = (gridChargeTOU[periodName] ?? 0) + chargeKwh;
+          } else if (reading.gridCharge > 0) {
+            // Mixed: some solar, some grid - attribute proportionally
+            const totalInput = solarExcess + reading.gridCharge;
+            const gridFraction = reading.gridCharge / totalInput;
+            const chargeKwh = (socDelta / 100) * batteryCapacityKwh * gridFraction;
+            gridChargeTOU[periodName] = (gridChargeTOU[periodName] ?? 0) + chargeKwh;
+          }
+        }
+      }
+    }
   }
 
   return {
@@ -316,7 +417,11 @@ function calculateTOUFromPower(powerReadings: PowerReading[] | null | undefined)
     morningPeakImport,
     afternoonPeakImport,
     morningPeakExport,
-    afternoonPeakExport
+    afternoonPeakExport,
+    batteryDischargeTOU,
+    gridChargeTOU,
+    minSoC,
+    maxSoC
   };
 }
 
@@ -331,7 +436,11 @@ function emptyTotals(): PeriodTotals {
     batteryDischarge: 0,
     importByTOU: emptyTOUBreakdown(),
     exportByTOU: emptyTOUBreakdown(),
-    exportByFeedInPeriod: emptyFeedInBreakdown()
+    exportByFeedInPeriod: emptyFeedInBreakdown(),
+    batteryDischargeTOU: emptyTOUBreakdown(),
+    gridChargeTOU: emptyTOUBreakdown(),
+    chargeFromSolar: 0,
+    chargeFromGrid: 0
   };
 }
 
@@ -554,6 +663,9 @@ function analyzeHistoricalData(stats: Stats): Analysis {
     process.exit(1);
   }
 
+  // Get battery capacity from system info (default 10kWh)
+  const batteryCapacityKwh = system.systemInfo?.cobat ?? 10;
+
   const daily: DailyEntry[] = [];
   const overallTotals = emptyTotals();
   const yearTotals = new Map<number, PeriodTotals>();
@@ -574,8 +686,37 @@ function analyzeHistoricalData(stats: Stats): Analysis {
 
     const load = (e.epv ?? 0) + (e.eInput ?? 0) + (e.eDischarge ?? 0) - (e.eOutput ?? 0) - (e.eCharge ?? 0);
 
-    // Calculate TOU from power readings for this day
-    const tou = calculateTOUFromPower(day.power as PowerReading[] | null);
+    // Calculate TOU from power readings for this day (with battery behavior tracking)
+    const tou = calculateTOUFromPower(day.power as PowerReading[] | null, batteryCapacityKwh);
+
+    // Calculate battery behavior from daily aggregates + power data
+    const chargeFromGrid = e.eGridCharge ?? 0;
+    const chargeFromSolar = Math.max(0, (e.eCharge ?? 0) - chargeFromGrid);
+
+    // Calculate headroom for additional battery
+    // Solar capturable = export that could have been stored
+    const solarCapturable = e.eOutput ?? 0;
+    // Peak offsetable = peak import remaining (could be offset with more battery capacity)
+    const peakOffsetable = (tou.import.peak ?? 0) + (tou.morningPeakImport ?? 0);
+    // Grid chargeable = estimate of off-peak capacity available
+    // (if we had more battery, we could charge more from grid during off-peak)
+    const currentUsedCapacity = (tou.maxSoC - tou.minSoC) / 100 * batteryCapacityKwh;
+    const gridChargeable = Math.max(0, batteryCapacityKwh * USABLE_CAPACITY_PERCENT - currentUsedCapacity);
+
+    const batteryBehavior: BatteryBehavior = {
+      chargeFromSolar,
+      chargeFromGrid,
+      chargeFromGridByTOU: tou.gridChargeTOU,
+      dischargeToPeak: tou.batteryDischargeTOU.peak ?? 0,
+      dischargeToShoulder: tou.batteryDischargeTOU.shoulder ?? 0,
+      dischargeToOffpeak: tou.batteryDischargeTOU.offpeak ?? 0,
+      maxSoC: tou.maxSoC,
+      minSoC: tou.minSoC,
+      cycleDepth: tou.maxSoC - tou.minSoC,
+      solarCapturable,
+      gridChargeable,
+      peakOffsetable
+    };
 
     const entry: DailyEntry = {
       date: day.date,
@@ -599,7 +740,9 @@ function analyzeHistoricalData(stats: Stats): Analysis {
       morningPeakImport: tou.morningPeakImport,
       afternoonPeakImport: tou.afternoonPeakImport,
       morningPeakExport: tou.morningPeakExport,
-      afternoonPeakExport: tou.afternoonPeakExport
+      afternoonPeakExport: tou.afternoonPeakExport,
+      // Battery behavior
+      battery: batteryBehavior
     };
     daily.push(entry);
 
@@ -615,6 +758,11 @@ function analyzeHistoricalData(stats: Stats): Analysis {
       addTOU(totals.importByTOU, tou.import);
       addTOU(totals.exportByTOU, tou.export);
       addTOU(totals.exportByFeedInPeriod, tou.exportByFeedInPeriod);
+      // Battery behavior aggregates
+      addTOU(totals.batteryDischargeTOU, tou.batteryDischargeTOU);
+      addTOU(totals.gridChargeTOU, tou.gridChargeTOU);
+      totals.chargeFromSolar += chargeFromSolar;
+      totals.chargeFromGrid += chargeFromGrid;
     };
 
     addToTotals(overallTotals);
@@ -687,25 +835,35 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
   // Max energy that can be captured in a day based on charge rate and shoulder hours
   const maxDailyCharge = MAX_CHARGE_RATE_KW * SHOULDER_HOURS;
 
+  // Get tariff rates for value calculations
+  const peakRate = getRateForPeriod('peak');
+  const offpeakRate = getRateForPeriod('offpeak');
+  const feedInRate = hasTOUFeedIn()
+    ? getFeedInPeriodsByRate()[getFeedInPeriodsByRate().length - 1]?.rate ?? TARIFF.feedInTariff
+    : TARIFF.feedInTariff;
+
   // Calculate using ACTUAL daily data with ACTUAL TOU breakdown
   for (let additionalBatteries = 0; additionalBatteries <= 3; additionalBatteries++) {
     const additionalKwh = additionalBatteries * BATTERY_SIZE_KWH;
     const totalBatteryKwh = currentBatteryKwh + additionalKwh;
     const additionalUsableKwh = additionalKwh * USABLE_CAPACITY_PERCENT;
 
-    let totalValue = 0;
+    let totalSolarArbValue = 0;
+    let totalGridArbValue = 0;
     let totalCaptured = 0;
 
     for (const day of analysis.daily) {
-      // Calculate max useful discharge first - don't capture more than you can use
-      // Only afternoon peak and shoulder imports can be offset by same-day solar
       const hasTOUData = day.peakImport > 0 || day.shoulderImport > 0 || day.offpeakImport > 0;
-      let maxUsefulDischarge: number;
 
+      // ═══════════════════════════════════════════════════════════════════════
+      // SOLAR ARBITRAGE: Capture excess solar → discharge during peak
+      // ═══════════════════════════════════════════════════════════════════════
+
+      // Calculate max useful discharge first - afternoon peak and shoulder
+      let maxUsefulDischarge: number;
       if (hasTOUData) {
         maxUsefulDischarge = day.afternoonPeakImport + day.shoulderImport;
       } else {
-        // Fall back: estimate useful discharge from total import
         const afternoonPeakRatio = 0.71;
         const overallPeakRatio = analysis.hasPowerData
           ? (analysis.overall.importByTOU.peak ?? 0) / (analysis.overall.gridImport || 1)
@@ -716,70 +874,87 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
         maxUsefulDischarge = day.gridImport * (overallPeakRatio * afternoonPeakRatio + shoulderRatio);
       }
 
-      // Max capture = max useful discharge / efficiency (need to charge more than you discharge)
-      const maxUsefulCapture = maxUsefulDischarge / BATTERY_EFFICIENCY;
-
-      // How much can we capture? Limited by:
-      // 1. Battery capacity (usable)
-      // 2. Available export (solar excess)
-      // 3. Charge rate × available charging hours (shoulder period)
-      // 4. What we can actually usefully discharge (don't capture more than we can use)
-      const capturable = Math.min(
+      // Solar capturable = min(additional capacity, solar export, charge rate limit, useful discharge)
+      const solarCapturable = Math.min(
         additionalUsableKwh,
         Math.max(0, day.gridExport),
         maxDailyCharge,
-        maxUsefulCapture
+        maxUsefulDischarge / BATTERY_EFFICIENCY
       );
-      if (capturable <= 0) continue;
 
-      // How much can we discharge? capturable × efficiency
-      const dischargeable = capturable * BATTERY_EFFICIENCY;
+      if (solarCapturable > 0) {
+        const solarDischargeable = solarCapturable * BATTERY_EFFICIENCY;
 
-      // Use ACTUAL TOU data: discharge during AFTERNOON peak only (not morning peak)
-      // Morning peak (6-10am) happens BEFORE solar production, so we can't use same-day
-      // solar to serve morning peak. Only afternoon/evening peak (3pm-1am) is serviceable.
-      let afternoonPeakDischarge: number;
-      let shoulderDischarge: number;
+        // Discharge to afternoon peak first, then shoulder
+        let afternoonPeakDischarge: number;
+        let shoulderDischarge: number;
+        if (hasTOUData) {
+          afternoonPeakDischarge = Math.min(solarDischargeable, day.afternoonPeakImport);
+          shoulderDischarge = Math.min(solarDischargeable - afternoonPeakDischarge, day.shoulderImport);
+        } else {
+          const afternoonPeakRatio = 0.71;
+          const overallPeakRatio = analysis.hasPowerData
+            ? (analysis.overall.importByTOU.peak ?? 0) / (analysis.overall.gridImport || 1) : 0.70;
+          const shoulderRatio = analysis.hasPowerData
+            ? (analysis.overall.importByTOU.shoulder ?? 0) / (analysis.overall.gridImport || 1) : 0.05;
+          afternoonPeakDischarge = Math.min(solarDischargeable, day.gridImport * overallPeakRatio * afternoonPeakRatio);
+          shoulderDischarge = Math.min(solarDischargeable - afternoonPeakDischarge, day.gridImport * shoulderRatio);
+        }
 
-      if (hasTOUData) {
-        // Use actual measured TOU data - only afternoon peak is usable
-        afternoonPeakDischarge = Math.min(dischargeable, day.afternoonPeakImport);
-        shoulderDischarge = Math.min(dischargeable - afternoonPeakDischarge, day.shoulderImport);
-      } else {
-        // Fall back: estimate afternoon peak as portion of total peak
-        // Afternoon peak (3pm-1am = 10 hours) vs morning peak (6-10am = 4 hours)
-        // So ~71% of peak hours are in the afternoon/evening
-        const afternoonPeakRatio = 0.71;
-        const overallPeakRatio = analysis.hasPowerData
-          ? (analysis.overall.importByTOU.peak ?? 0) / (analysis.overall.gridImport || 1)
-          : 0.70;
-        const shoulderRatio = analysis.hasPowerData
-          ? (analysis.overall.importByTOU.shoulder ?? 0) / (analysis.overall.gridImport || 1)
-          : 0.05;
-        const estimatedAfternoonPeak = day.gridImport * overallPeakRatio * afternoonPeakRatio;
-        const estimatedShoulder = day.gridImport * shoulderRatio;
-        afternoonPeakDischarge = Math.min(dischargeable, estimatedAfternoonPeak);
-        shoulderDischarge = Math.min(dischargeable - afternoonPeakDischarge, estimatedShoulder);
+        // Solar arbitrage value = peak discharge value - feed-in opportunity cost
+        const solarDayValue = afternoonPeakDischarge * peakRate + shoulderDischarge * getRateForPeriod('shoulder')
+                              - solarCapturable * feedInRate;
+        totalSolarArbValue += Math.max(0, solarDayValue);
+        totalCaptured += solarCapturable;
       }
 
-      // Calculate value: stored solar would have been exported at feed-in rate
-      // Instead, we discharge during afternoon peak/shoulder avoiding those import costs
-      // For TOU feed-in, use lowest feed-in rate (conservative - solar typically captured during midday)
-      const feedInOpportunityCost = hasTOUFeedIn()
-        ? getFeedInPeriodsByRate()[getFeedInPeriodsByRate().length - 1]?.rate ?? TARIFF.feedInTariff
-        : TARIFF.feedInTariff;
-      const dayValue = afternoonPeakDischarge * getRateForPeriod('peak') + shoulderDischarge * getRateForPeriod('shoulder')
-                       - capturable * feedInOpportunityCost;
+      // ═══════════════════════════════════════════════════════════════════════
+      // GRID ARBITRAGE: Charge from off-peak grid → discharge during peak
+      // ═══════════════════════════════════════════════════════════════════════
 
-      totalValue += dayValue;
-      totalCaptured += capturable;
+      // Grid arbitrage is valuable when:
+      // 1. There's remaining peak import that wasn't offset by solar
+      // 2. There's unused battery capacity
+      // 3. The price spread (peak - offpeak) is positive
+
+      // Remaining peak after solar discharge
+      const peakImportRemaining = hasTOUData
+        ? Math.max(0, day.morningPeakImport + day.afternoonPeakImport - (solarCapturable > 0 ? solarCapturable * BATTERY_EFFICIENCY : 0))
+        : Math.max(0, day.gridImport * 0.70 - (solarCapturable > 0 ? solarCapturable * BATTERY_EFFICIENCY : 0));
+
+      // Available capacity for grid charging (after solar capture)
+      const capacityForGridCharge = Math.max(0, additionalUsableKwh - solarCapturable);
+
+      // Grid charging is most valuable for morning peak (before solar)
+      // Can charge overnight (off-peak) to serve morning peak (6-10am)
+      const morningPeakTarget = hasTOUData ? day.morningPeakImport : day.gridImport * 0.70 * 0.29;
+
+      // Grid chargeable = min(remaining capacity, peak import remaining, morning peak target)
+      const gridChargeable = Math.min(
+        capacityForGridCharge,
+        peakImportRemaining / BATTERY_EFFICIENCY,
+        morningPeakTarget / BATTERY_EFFICIENCY
+      );
+
+      if (gridChargeable > 0) {
+        const gridDischargeable = gridChargeable * BATTERY_EFFICIENCY;
+
+        // Grid arbitrage value = (peak rate - offpeak rate) × discharge amount
+        // We charge at off-peak, discharge at peak
+        const gridDayValue = gridDischargeable * (peakRate - offpeakRate);
+        totalGridArbValue += Math.max(0, gridDayValue);
+      }
     }
 
     const numDays = analysis.daily.length;
-    const avgDailyValue = numDays > 0 ? totalValue / numDays : 0;
+    const avgDailySolarArb = numDays > 0 ? totalSolarArbValue / numDays : 0;
+    const avgDailyGridArb = numDays > 0 ? totalGridArbValue / numDays : 0;
+    const avgDailyValue = avgDailySolarArb + avgDailyGridArb;
     const avgDailyCapture = numDays > 0 ? totalCaptured / numDays : 0;
 
-    const annualSavings = avgDailyValue * 365;
+    const annualSolarArb = avgDailySolarArb * 365;
+    const annualGridArb = avgDailyGridArb * 365;
+    const annualSavings = annualSolarArb + annualGridArb;
     const investment = additionalBatteries * BATTERY_COST;
     const paybackYears = investment > 0 && annualSavings > 0 ? investment / annualSavings : Infinity;
     const lifetimeSavings = annualSavings * BATTERY_LIFESPAN_YEARS;
@@ -795,7 +970,9 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
       investment,
       paybackYears,
       lifetimeSavings,
-      roi
+      roi,
+      solarArbitrageValue: annualSolarArb,
+      gridArbitrageValue: annualGridArb
     });
   }
 
@@ -810,6 +987,11 @@ function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
   // Fallback TOU distribution if no power data available
   const fallbackImportDist = { peak: 0.70, shoulder: 0.05, offpeak: 0.25 };
   const fallbackAvgRate = calculateWeightedAvgRate(fallbackImportDist);
+
+  // Get tariff rates
+  const peakRate = getRateForPeriod('peak');
+  const offpeakRate = getRateForPeriod('offpeak');
+  const feedInRate = TARIFF.feedInTariff;
 
   // ACTUAL: What you paid with solar + battery
   // Use actual TOU data when available
@@ -868,6 +1050,70 @@ function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
   const noSolarImportCost = noSolarImport * fallbackAvgRate;
   const noSolarNetCost = noSolarImportCost; // No feed-in revenue
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VALUE ATTRIBUTION: Break down actual battery value by source
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Calculate value attribution from actual battery behavior
+  const totalPeakDischarge = analysis.overall.batteryDischargeTOU.peak ?? 0;
+  const totalChargeFromSolar = analysis.overall.chargeFromSolar;
+  const totalChargeFromGrid = analysis.overall.chargeFromGrid;
+  const totalCharge = totalChargeFromSolar + totalChargeFromGrid;
+
+  // Attribute peak discharge proportionally to solar vs grid charge
+  const solarFraction = totalCharge > 0 ? totalChargeFromSolar / totalCharge : 1;
+  const gridFraction = totalCharge > 0 ? totalChargeFromGrid / totalCharge : 0;
+
+  // Solar arbitrage value: solar charge that displaced peak imports
+  // Value = discharge × (peak_rate - feed_in_rate) for solar portion
+  const solarToPeak = totalPeakDischarge * solarFraction;
+  const solarArbitrageValue = solarToPeak * (peakRate - feedInRate);
+
+  // Grid arbitrage value: grid charge that displaced peak imports
+  // Value = discharge × (peak_rate - offpeak_rate) for grid portion
+  const gridToPeak = totalPeakDischarge * gridFraction;
+  const gridArbitrageValue = gridToPeak * (peakRate - offpeakRate);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OPTIMAL: What we could have achieved with perfect battery control
+  // Calculate by identifying inefficiencies in actual operation
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 1. Off-peak discharge waste - battery discharged during cheap periods
+  //    This energy should have been saved for peak periods
+  const offpeakDischarge = analysis.overall.batteryDischargeTOU.offpeak ?? 0;
+  const offpeakDischargeWaste = offpeakDischarge * (peakRate - offpeakRate);
+
+  // 2. Peak grid charging waste - charged from grid during expensive periods
+  //    Should have charged during off-peak instead
+  const peakGridCharge = analysis.overall.gridChargeTOU.peak ?? 0;
+  const peakGridChargeWaste = peakGridCharge * (peakRate - offpeakRate);
+
+  // 3. Missed solar capture - solar we exported but could have stored
+  //    Only count if there was peak demand to use it
+  const batteryCapacity = analysis.currentBatteryKwh * USABLE_CAPACITY_PERCENT;
+  let missedSolarCapture = 0;
+  for (const day of analysis.daily) {
+    // If there was export AND battery wasn't at max SoC, we may have missed capture
+    const usedCapacity = (day.battery.maxSoC / 100) * analysis.currentBatteryKwh;
+    const unusedCapacity = Math.max(0, batteryCapacity - usedCapacity);
+    // Only count missed capture up to what we could use in peak
+    const peakDemandRemaining = day.peakImport;  // Peak import we still had
+    const potentialMissedCapture = Math.min(day.gridExport, unusedCapacity, peakDemandRemaining / BATTERY_EFFICIENCY);
+    if (potentialMissedCapture > 0) {
+      // Value = what we could have saved vs exporting
+      missedSolarCapture += potentialMissedCapture * (peakRate - feedInRate);
+    }
+  }
+
+  // Total optimization gap = sum of all inefficiencies
+  const optimalGap = Math.max(0, offpeakDischargeWaste + peakGridChargeWaste + missedSolarCapture);
+
+  // Optimal net cost = actual - the gap (optimal is always <= actual)
+  const optimalImportCost = Math.max(0, actualImportCost - optimalGap);
+  const optimalFeedInRevenue = actualFeedInRevenue;  // Conservative: keep same feed-in
+  const optimalNetCost = optimalImportCost - optimalFeedInRevenue;
+
   return {
     actual: {
       totalImportCost: actualImportCost,
@@ -883,9 +1129,17 @@ function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
       totalImportCost: noSolarImportCost,
       totalNetCost: noSolarNetCost
     },
+    optimal: {
+      totalImportCost: optimalImportCost,
+      totalFeedInRevenue: optimalFeedInRevenue,
+      totalNetCost: optimalNetCost
+    },
     savingsFromBattery: solarOnlyNetCost - actualNetCost,
     savingsFromSolar: noSolarNetCost - solarOnlyNetCost,
-    totalSavings: noSolarNetCost - actualNetCost
+    totalSavings: noSolarNetCost - actualNetCost,
+    solarArbitrageValue,
+    gridArbitrageValue,
+    optimalGap
   };
 }
 
@@ -953,6 +1207,184 @@ function printSeasonalComparison(analysis: Analysis) {
     }
     console.log(row);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BATTERY UTILIZATION REPORT
+// ═══════════════════════════════════════════════════════════════════════════
+
+function printBatteryUtilizationReport(analysis: Analysis): void {
+  console.log('\n📊 ACTUAL BATTERY UTILIZATION (from power data)');
+  console.log('═'.repeat(95));
+
+  const seasonOrder: SeasonName[] = ['summer', 'autumn', 'winter', 'spring'];
+
+  // Header
+  console.log(
+    '                              ' +
+    'Summer'.padStart(10) +
+    'Autumn'.padStart(10) +
+    'Winter'.padStart(10) +
+    'Spring'.padStart(10) +
+    'Annual'.padStart(10)
+  );
+  console.log('─'.repeat(95));
+
+  // Charging Source section
+  console.log('CHARGING SOURCE');
+
+  // From solar
+  const solarRow = '  From solar             ';
+  let solarValues = seasonOrder.map(s => {
+    const data = analysis.bySeason.get(s);
+    if (!data || data.days === 0) return '--';
+    return fmt(data.chargeFromSolar / data.days, 1) + 'kWh';
+  });
+  const annualSolarAvg = analysis.overall.days > 0
+    ? fmt(analysis.overall.chargeFromSolar / analysis.overall.days, 1) + 'kWh/day'
+    : '--';
+  console.log(solarRow + solarValues.map(v => v.padStart(10)).join('') + annualSolarAvg.padStart(12));
+
+  // From grid (break down by TOU)
+  const gridRow = '  From grid (off-peak)   ';
+  let gridOffpeakValues = seasonOrder.map(s => {
+    const data = analysis.bySeason.get(s);
+    if (!data || data.days === 0) return '--';
+    const offpeakCharge = data.gridChargeTOU.offpeak ?? 0;
+    return fmt(offpeakCharge / data.days, 1) + 'kWh';
+  });
+  const annualGridOffpeak = analysis.overall.days > 0
+    ? fmt((analysis.overall.gridChargeTOU.offpeak ?? 0) / analysis.overall.days, 1) + 'kWh/day'
+    : '--';
+  console.log(gridRow + gridOffpeakValues.map(v => v.padStart(10)).join('') + annualGridOffpeak.padStart(12));
+
+  // From grid (peak) - wasteful
+  const peakGridCharge = analysis.overall.gridChargeTOU.peak ?? 0;
+  if (peakGridCharge > 0) {
+    const peakRow = '  From grid (peak) ⚠️    ';
+    let gridPeakValues = seasonOrder.map(s => {
+      const data = analysis.bySeason.get(s);
+      if (!data || data.days === 0) return '--';
+      const peakCharge = data.gridChargeTOU.peak ?? 0;
+      if (peakCharge === 0) return '--';
+      return fmt(peakCharge / data.days, 1) + 'kWh';
+    });
+    const annualGridPeak = analysis.overall.days > 0
+      ? fmt(peakGridCharge / analysis.overall.days, 1) + 'kWh/day'
+      : '--';
+    console.log(peakRow + gridPeakValues.map(v => v.padStart(10)).join('') + annualGridPeak.padStart(12));
+  }
+
+  console.log('');
+
+  // Discharge Destination section
+  console.log('DISCHARGE DESTINATION');
+
+  // To peak
+  const peakDischargeRow = '  To peak periods        ';
+  let peakDischargeValues = seasonOrder.map(s => {
+    const data = analysis.bySeason.get(s);
+    if (!data || data.days === 0) return '--';
+    const peakDischarge = data.batteryDischargeTOU.peak ?? 0;
+    return fmt(peakDischarge / data.days, 1) + 'kWh';
+  });
+  const annualPeakDischarge = analysis.overall.days > 0
+    ? fmt((analysis.overall.batteryDischargeTOU.peak ?? 0) / analysis.overall.days, 1) + 'kWh/day'
+    : '--';
+  console.log(peakDischargeRow + peakDischargeValues.map(v => v.padStart(10)).join('') + annualPeakDischarge.padStart(12));
+
+  // To shoulder
+  const shoulderDischargeRow = '  To shoulder periods    ';
+  let shoulderDischargeValues = seasonOrder.map(s => {
+    const data = analysis.bySeason.get(s);
+    if (!data || data.days === 0) return '--';
+    const shoulderDischarge = data.batteryDischargeTOU.shoulder ?? 0;
+    return fmt(shoulderDischarge / data.days, 1) + 'kWh';
+  });
+  const annualShoulderDischarge = analysis.overall.days > 0
+    ? fmt((analysis.overall.batteryDischargeTOU.shoulder ?? 0) / analysis.overall.days, 1) + 'kWh/day'
+    : '--';
+  console.log(shoulderDischargeRow + shoulderDischargeValues.map(v => v.padStart(10)).join('') + annualShoulderDischarge.padStart(12));
+
+  // To off-peak (wasteful)
+  const offpeakDischarge = analysis.overall.batteryDischargeTOU.offpeak ?? 0;
+  if (offpeakDischarge > 0) {
+    const offpeakDischargeRow = '  To off-peak ⚠️         ';
+    let offpeakDischargeValues = seasonOrder.map(s => {
+      const data = analysis.bySeason.get(s);
+      if (!data || data.days === 0) return '--';
+      const discharge = data.batteryDischargeTOU.offpeak ?? 0;
+      if (discharge === 0) return '--';
+      return fmt(discharge / data.days, 1) + 'kWh';
+    });
+    const annualOffpeakDischarge = analysis.overall.days > 0
+      ? fmt(offpeakDischarge / analysis.overall.days, 1) + 'kWh/day'
+      : '--';
+    console.log(offpeakDischargeRow + offpeakDischargeValues.map(v => v.padStart(10)).join('') + annualOffpeakDischarge.padStart(12));
+  }
+
+  // Value attribution section
+  console.log('\n' + '─'.repeat(95));
+  console.log('VALUE ATTRIBUTION');
+
+  // Calculate values using tariff rates
+  const peakRate = getRateForPeriod('peak');
+  const offpeakRate = getRateForPeriod('offpeak');
+  const feedInRate = TARIFF.feedInTariff;
+
+  const solarArbRow = '  Solar arbitrage value  ';
+  let solarArbValues = seasonOrder.map(s => {
+    const data = analysis.bySeason.get(s);
+    if (!data || data.days === 0) return '--';
+    // Value = solar charge that went to peak discharge
+    const peakDischarge = data.batteryDischargeTOU.peak ?? 0;
+    const solarCharge = data.chargeFromSolar;
+    // Attribute peak discharge proportionally to solar vs grid charge
+    const totalCharge = solarCharge + data.chargeFromGrid;
+    const solarFraction = totalCharge > 0 ? solarCharge / totalCharge : 1;
+    const solarToPeak = peakDischarge * solarFraction;
+    const value = solarToPeak * (peakRate - feedInRate);
+    return '$' + fmt(value, 0);
+  });
+  // Annual
+  const annualPeakDischTotal = analysis.overall.batteryDischargeTOU.peak ?? 0;
+  const annualTotalCharge = analysis.overall.chargeFromSolar + analysis.overall.chargeFromGrid;
+  const annualSolarFraction = annualTotalCharge > 0 ? analysis.overall.chargeFromSolar / annualTotalCharge : 1;
+  const annualSolarToPeak = annualPeakDischTotal * annualSolarFraction;
+  const annualSolarArbValue = annualSolarToPeak * (peakRate - feedInRate);
+  console.log(solarArbRow + solarArbValues.map(v => v.padStart(10)).join('') + ('$' + fmt(annualSolarArbValue, 0) + '/yr').padStart(10));
+
+  const gridArbRow = '  Grid arbitrage value   ';
+  let gridArbValues = seasonOrder.map(s => {
+    const data = analysis.bySeason.get(s);
+    if (!data || data.days === 0) return '--';
+    const peakDischarge = data.batteryDischargeTOU.peak ?? 0;
+    const totalCharge = data.chargeFromSolar + data.chargeFromGrid;
+    const gridFraction = totalCharge > 0 ? data.chargeFromGrid / totalCharge : 0;
+    const gridToPeak = peakDischarge * gridFraction;
+    const value = gridToPeak * (peakRate - offpeakRate);
+    return '$' + fmt(value, 0);
+  });
+  const annualGridFraction = annualTotalCharge > 0 ? analysis.overall.chargeFromGrid / annualTotalCharge : 0;
+  const annualGridToPeak = annualPeakDischTotal * annualGridFraction;
+  const annualGridArbValue = annualGridToPeak * (peakRate - offpeakRate);
+  console.log(gridArbRow + gridArbValues.map(v => v.padStart(10)).join('') + ('$' + fmt(annualGridArbValue, 0) + '/yr').padStart(10));
+
+  console.log('─'.repeat(95));
+  const totalRow = '  Total battery value    ';
+  let totalValues = seasonOrder.map(s => {
+    const data = analysis.bySeason.get(s);
+    if (!data || data.days === 0) return '--';
+    const peakDischarge = data.batteryDischargeTOU.peak ?? 0;
+    const totalCharge = data.chargeFromSolar + data.chargeFromGrid;
+    const solarFrac = totalCharge > 0 ? data.chargeFromSolar / totalCharge : 1;
+    const gridFrac = 1 - solarFrac;
+    const solarValue = peakDischarge * solarFrac * (peakRate - feedInRate);
+    const gridValue = peakDischarge * gridFrac * (peakRate - offpeakRate);
+    return '$' + fmt(solarValue + gridValue, 0);
+  });
+  const annualTotalValue = annualSolarArbValue + annualGridArbValue;
+  console.log(totalRow + totalValues.map(v => v.padStart(10)).join('') + ('$' + fmt(annualTotalValue, 0) + '/yr').padStart(10));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1087,6 +1519,11 @@ function main() {
     console.log('  Export: Peak ' + estimatedExportDist.peak + '% | Shoulder ' + estimatedExportDist.shoulder + '% | Off-peak ' + estimatedExportDist.offpeak + '%');
   }
 
+  // Battery Utilization Report (Phase 2: Ground truth from power data)
+  if (analysis.hasPowerData) {
+    printBatteryUtilizationReport(analysis);
+  }
+
   // Battery Efficiency / Degradation
   console.log('\n🔋 BATTERY EFFICIENCY OVER TIME');
   console.log('═'.repeat(85));
@@ -1205,6 +1642,12 @@ function main() {
     pad('$' + fmt(savings.actual.totalFeedInRevenue, 0), 15) +
     pad('$' + fmt(savings.actual.totalNetCost, 0), 12)
   );
+  console.log(
+    '  Solar + Battery (optimal)     ' +
+    pad('$' + fmt(savings.optimal.totalImportCost, 0), 12) +
+    pad('$' + fmt(savings.optimal.totalFeedInRevenue, 0), 15) +
+    pad('$' + fmt(savings.optimal.totalNetCost, 0), 12) + '  ← perfect control'
+  );
 
   console.log('\n  SAVINGS BREAKDOWN');
   console.log('─'.repeat(85));
@@ -1212,6 +1655,25 @@ function main() {
   console.log(`  Battery savings (vs solar only):       $${fmt(savings.savingsFromBattery, 0)} total | $${fmt(savings.savingsFromBattery / years, 0)}/year`);
   console.log(`  ─────────────────────────────────────`);
   console.log(`  Total savings (vs no solar):           $${fmt(savings.totalSavings, 0)} total | $${fmt(savings.totalSavings / years, 0)}/year`);
+
+  // Battery value attribution
+  console.log('\n  BATTERY VALUE ATTRIBUTION');
+  console.log('─'.repeat(85));
+  const totalBatteryValue = savings.solarArbitrageValue + savings.gridArbitrageValue;
+  const solarArbPct = totalBatteryValue > 0 ? (savings.solarArbitrageValue / totalBatteryValue * 100) : 0;
+  const gridArbPct = totalBatteryValue > 0 ? (savings.gridArbitrageValue / totalBatteryValue * 100) : 0;
+  console.log(`  Solar arbitrage (solar→peak):          $${fmt(savings.solarArbitrageValue, 0)} total | $${fmt(savings.solarArbitrageValue / years, 0)}/year (${fmt(solarArbPct, 0)}%)`);
+  console.log(`  Grid arbitrage (offpeak→peak):         $${fmt(savings.gridArbitrageValue, 0)} total | $${fmt(savings.gridArbitrageValue / years, 0)}/year (${fmt(gridArbPct, 0)}%)`);
+  console.log(`  ─────────────────────────────────────`);
+  console.log(`  Total battery value:                   $${fmt(totalBatteryValue, 0)} total | $${fmt(totalBatteryValue / years, 0)}/year`);
+
+  // Gap analysis
+  if (savings.optimalGap > 0) {
+    console.log('\n  OPTIMIZATION OPPORTUNITY');
+    console.log('─'.repeat(85));
+    console.log(`  Gap vs optimal control:                $${fmt(savings.optimalGap, 0)} total | $${fmt(savings.optimalGap / years, 0)}/year`);
+    console.log(`  Potential improvement:                 ${fmt(savings.optimalGap / savings.savingsFromBattery * 100, 0)}% more battery value possible`);
+  }
 
   // Retrospective ROI for existing installations
   console.log('\n  WAS YOUR INVESTMENT WORTH IT?');
@@ -1296,35 +1758,44 @@ function main() {
     : TARIFF.feedInTariff;
   console.log(`  Max arbitrage value:         $${((highestRate.rate - lowestFeedIn) * BATTERY_EFFICIENCY).toFixed(4)}/kWh (${highestRate.name})`);
 
-  console.log('\n📊 SCENARIO COMPARISON');
-  console.log('═'.repeat(85));
+  console.log('\n📊 SCENARIO COMPARISON (with grid arbitrage)');
+  console.log('═'.repeat(100));
   console.log(
-    'Additional'.padEnd(12) +
+    'Additional'.padEnd(14) +
     'Total'.padStart(8) +
-    'Usable+'.padStart(10) +
-    'Daily $'.padStart(10) +
-    'Annual $'.padStart(12) +
+    'Solar Arb'.padStart(12) +
+    'Grid Arb'.padStart(12) +
+    'Total $/yr'.padStart(12) +
     'Payback'.padStart(10) +
     'Lifetime $'.padStart(12) +
     'ROI %'.padStart(10)
   );
-  console.log('─'.repeat(85));
+  console.log('─'.repeat(100));
 
   for (const s of scenarios) {
     if (s.additionalBatteries === 0) {
-      console.log(`  0 (current)`.padEnd(12) + pad(s.totalBatteryKwh + 'kWh', 8) + '     (baseline)');
+      console.log(`  0 (current)`.padEnd(14) + pad(s.totalBatteryKwh + 'kWh', 8) + '     (baseline - no additional value)');
     } else {
       console.log(
-        `  +${s.additionalBatteries} (${s.additionalKwh}kWh)`.padEnd(12) +
+        `  +${s.additionalBatteries} (${s.additionalKwh}kWh)`.padEnd(14) +
         pad(s.totalBatteryKwh + 'kWh', 8) +
-        pad(fmt(s.additionalUsableCapacity, 1), 10) +
-        pad('$' + fmt(s.dailySavings, 2), 10) +
+        pad('$' + fmt(s.solarArbitrageValue, 0), 12) +
+        pad('$' + fmt(s.gridArbitrageValue, 0), 12) +
         pad('$' + fmt(s.annualSavings, 0), 12) +
         pad(s.paybackYears === Infinity ? 'N/A' : fmt(s.paybackYears, 1) + 'yr', 10) +
         pad('$' + fmt(s.lifetimeSavings, 0), 12) +
         pad(fmt(s.roi, 1) + '%', 10)
       );
     }
+  }
+
+  // Show value source breakdown for best scenario
+  const bestNonZero = scenarios.find(s => s.additionalBatteries > 0 && s.annualSavings > 0);
+  if (bestNonZero) {
+    const solarPct = bestNonZero.solarArbitrageValue / bestNonZero.annualSavings * 100;
+    const gridPct = bestNonZero.gridArbitrageValue / bestNonZero.annualSavings * 100;
+    console.log('─'.repeat(100));
+    console.log(`  Value sources for +1 battery: Solar arbitrage ${fmt(solarPct, 0)}% | Grid arbitrage ${fmt(gridPct, 0)}%`);
   }
 
   // Recommendation
