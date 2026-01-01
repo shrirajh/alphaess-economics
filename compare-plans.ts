@@ -16,6 +16,7 @@ interface CliArgs {
   cacheDir: string;
   force: boolean;
   excludeConditions: boolean;
+  excludeVpp: boolean;     // Exclude plans requiring VPP
   currentTariff?: string;  // Path to current tariff JSON for comparison
   save: boolean;           // Save top N as JSON files
   outputDir: string;       // Directory to save JSON files
@@ -30,6 +31,7 @@ function parseArgs(): CliArgs {
     cacheDir: './cache',
     force: false,
     excludeConditions: false,
+    excludeVpp: false,
     save: false,
     outputDir: './tariffs',
   };
@@ -47,6 +49,8 @@ function parseArgs(): CliArgs {
       result.force = true;
     } else if (arg === '--exclude-conditions' || arg === '--no-conditions') {
       result.excludeConditions = true;
+    } else if (arg === '--exclude-vpp' || arg === '--no-vpp') {
+      result.excludeVpp = true;
     } else if (arg.startsWith('--current=')) {
       result.currentTariff = arg.slice(10);
     } else if (arg === '--save') {
@@ -83,6 +87,7 @@ Options:
   --cache=DIR         Cache directory (default: ./cache)
   --force, -f         Force recalculation (ignore cache)
   --exclude-conditions  Exclude plans with eligibility conditions
+  --exclude-vpp       Exclude plans requiring VPP (Virtual Power Plant)
   --verbose, -v       Show detailed output
   --help, -h          Show this help
 
@@ -147,6 +152,7 @@ interface CachedPlanSummary {
 interface PlanCondition {
   type: string;
   info: string;
+  isVpp?: boolean;  // True if this condition relates to VPP requirement
 }
 
 interface PlanFee {
@@ -172,6 +178,7 @@ interface PlanCost {
   conditions: PlanCondition[];
   fees: PlanFee[];
   effectiveFrom?: string;
+  requiresVpp: boolean;  // True if plan requires VPP participation
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -193,6 +200,7 @@ interface CachedCalculation {
   conditions: PlanCondition[];
   fees: PlanFee[];
   effectiveFrom?: string;
+  requiresVpp: boolean;
 }
 
 interface CalculationCacheEntry {
@@ -476,6 +484,15 @@ interface ParsedPlanResult {
   conditions: PlanCondition[];
   fees: PlanFee[];
   effectiveFrom?: string;
+  requiresVpp: boolean;
+}
+
+// VPP detection keywords
+const VPP_KEYWORDS = ['vpp', 'virtual power plant', 'demand response', 'grid support', 'battery control'];
+
+function detectVpp(text: string): boolean {
+  const lower = text.toLowerCase();
+  return VPP_KEYWORDS.some(kw => lower.includes(kw));
 }
 
 function parsePlanDetail(data: unknown, retailerName: string): ParsedPlanResult | null {
@@ -486,6 +503,7 @@ function parsePlanDetail(data: unknown, retailerName: string): ParsedPlanResult 
     effectiveFrom?: string;
     geography?: { distributors?: string[] };
     electricityContract?: {
+      terms?: string;
       fees?: Array<{
         type?: string;
         term?: string;
@@ -671,11 +689,16 @@ function parsePlanDetail(data: unknown, retailerName: string): ParsedPlanResult 
     periods: { everyday: periods },
   };
 
+  // Detect VPP requirement from terms and conditions
+  const requiresVpp = detectVpp(contract.terms ?? '') ||
+    conditions.some(c => detectVpp(c.info));
+
   return {
     tariff,
     conditions,
     fees,
     effectiveFrom: plan.effectiveFrom,
+    requiresVpp,
   };
 }
 
@@ -798,6 +821,7 @@ function calculatePlanCost(
     conditions,
     fees,
     effectiveFrom,
+    requiresVpp: parsed.requiresVpp,
   };
 }
 
@@ -903,6 +927,7 @@ async function main(): Promise<void> {
       costs.push({
         ...cachedEntry.calculation,
         tariff: cachedEntry.tariff,
+        requiresVpp: cachedEntry.calculation.requiresVpp ?? false,
       });
       continue;
     }
@@ -950,6 +975,7 @@ async function main(): Promise<void> {
             conditions: cost.conditions,
             fees: cost.fees,
             effectiveFrom: cost.effectiveFrom,
+            requiresVpp: cost.requiresVpp,
           },
           tariff: cost.tariff,
         };
@@ -1008,6 +1034,14 @@ async function main(): Promise<void> {
     console.log(`Excluded ${excluded} plans with restrictive conditions (${filteredCosts.length} remaining)`);
   }
 
+  // Filter out VPP-required plans if requested
+  if (args.excludeVpp) {
+    const beforeVppFilter = filteredCosts.length;
+    filteredCosts = filteredCosts.filter(c => !c.requiresVpp);
+    const vppExcluded = beforeVppFilter - filteredCosts.length;
+    console.log(`Excluded ${vppExcluded} VPP-required plans (${filteredCosts.length} remaining)`);
+  }
+
   if (filteredCosts.length === 0) {
     console.error('No valid plans could be analyzed.');
     process.exit(1);
@@ -1026,6 +1060,7 @@ async function main(): Promise<void> {
         conditions: [],
         fees: [],
         effectiveFrom: undefined,
+        requiresVpp: false,
       };
       currentPlanCost = calculatePlanCost(parsed, usage, 'CURRENT', 'current', currentTariff.provider ?? 'Current Plan');
       console.log(`\nCurrent plan: ${currentTariff.name} (${currentTariff.provider})`);
@@ -1074,7 +1109,7 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < Math.min(3, topN.length); i++) {
     const c = topN[i]!;
-    console.log(`\n#${i + 1}: ${c.planName}`);
+    console.log(`\n#${i + 1}: ${c.planName}${c.requiresVpp ? ' [VPP REQUIRED]' : ''}`);
     console.log(`    Retailer: ${c.retailer}`);
     console.log(`    Plan ID: ${c.planId}`);
     console.log('-'.repeat(50));
