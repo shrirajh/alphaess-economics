@@ -13,6 +13,19 @@ This toolkit pulls historical data from your AlphaESS system and answers questio
 
 It also lets you apply optimized charge/discharge schedules based on your tariff's peak periods.
 
+## Screenshots
+
+### Web Report
+<img width="1051" height="1384" alt="image" src="https://github.com/user-attachments/assets/5b998dc6-e249-4f5e-859a-b2bf40443cdc" />
+<img width="1049" height="1222" alt="image" src="https://github.com/user-attachments/assets/a26a806c-e846-4f27-8be6-8d152a633146" />
+<img width="1021" height="1362" alt="image" src="https://github.com/user-attachments/assets/1d681897-6d73-4f23-970f-40af18962f51" />
+
+### CLI Script
+<img width="1416" height="976" alt="image" src="https://github.com/user-attachments/assets/9e5c49f9-33c2-4f78-b639-30c143bb37cd" />
+<img width="1427" height="1298" alt="image" src="https://github.com/user-attachments/assets/82b8fb7d-e70b-48b4-a0cf-ef6d3a02fad5" />
+<img width="1866" height="1257" alt="image" src="https://github.com/user-attachments/assets/80d3bac8-c0ae-4cd0-aa87-5fe23926fcfd" />
+<img width="1448" height="1275" alt="image" src="https://github.com/user-attachments/assets/1dcfcbdf-cca3-4305-8460-4e8d38873c25" />
+
 ## Setup
 
 You'll need Node.js 18+ and an AlphaESS Open API account.
