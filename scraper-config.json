@@ -1,0 +1,15 @@
+{
+  "filters": {
+    "fuelType": "ELECTRICITY",
+    "customerType": "RESIDENTIAL"
+  },
+  "cache": {
+    "enabled": true,
+    "ttlHours": 24,
+    "directory": "./cache",
+    "endpointsFile": "./cache/cdr-endpoints.json"
+  },
+  "output": {
+    "directory": "./tariffs"
+  }
+}

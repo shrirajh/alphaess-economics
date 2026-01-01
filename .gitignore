@@ -4,3 +4,4 @@ alphaess-*.json
 battery-*.json
 solar-report-*.html
 .env
+cache/

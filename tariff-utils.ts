@@ -21,6 +21,7 @@ export interface Tariff {
   name: string;
   provider?: string;
   state?: string;
+  dailySupplyCharge?: number;  // $/day supply charge
   feedInTariff: number;  // Flat rate fallback
   feedInPeriods?: Record<string, FeedInPeriodDef[]>;  // Optional TOU feed-in by day type
   dayTypes: Record<string, string>;  // e.g., { "weekday": "MTWTF", "weekend": "SS" }
