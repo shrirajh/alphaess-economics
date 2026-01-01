@@ -1,6 +1,6 @@
 # AlphaESS Battery Economics Toolkit
 
-Figure out if your battery is saving you money, find a cheaper electricity plan, and optimize your charge/discharge schedule.
+Figure out if your battery is saving you money, whether adding another battery makes sense, find a cheaper electricity plan, and optimize your charge/discharge schedule.
 
 ## Quick Start
 
