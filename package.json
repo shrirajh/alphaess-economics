@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "alphaess-client": "^1.0.5",
-    "dotenv": "^17.2.3"
+    "dotenv": "^17.2.3",
+    "vega": "^6.2.0",
+    "vega-lite": "^6.4.1"
   }
 }
