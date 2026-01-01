@@ -917,10 +917,13 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
       // 2. There's unused battery capacity
       // 3. The price spread (peak - offpeak) is positive
 
-      // Remaining peak after solar discharge
+      // Solar discharge primarily serves AFTERNOON peak (solar is available then)
+      // Morning peak (6-10am) is before significant solar, so it's fully available for grid arbitrage
+      const solarDischarge = solarCapturable > 0 ? solarCapturable * BATTERY_EFFICIENCY : 0;
+      const afternoonPeakRemaining = Math.max(0, day.afternoonPeakImport - solarDischarge);
       const peakImportRemaining = hasTOUData
-        ? Math.max(0, day.morningPeakImport + day.afternoonPeakImport - (solarCapturable > 0 ? solarCapturable * BATTERY_EFFICIENCY : 0))
-        : Math.max(0, day.gridImport * 0.70 - (solarCapturable > 0 ? solarCapturable * BATTERY_EFFICIENCY : 0));
+        ? day.morningPeakImport + afternoonPeakRemaining  // Morning peak unaffected by solar
+        : Math.max(0, day.gridImport * 0.70 - solarDischarge);
 
       // Available capacity for grid charging (after solar capture)
       const capacityForGridCharge = Math.max(0, additionalUsableKwh - solarCapturable);
@@ -1019,18 +1022,20 @@ function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
   // So solar-only scenario has MORE peak imports than actual, not the same distribution.
 
   const solarOnlyImport = analysis.overall.gridImport + analysis.overall.batteryDischarge;
-  const solarOnlyExport = analysis.overall.gridExport + analysis.overall.batteryCharge;
+  // Fix: Only solar charge becomes additional export (not grid charge)
+  const solarOnlyExport = analysis.overall.gridExport + analysis.overall.chargeFromSolar;
 
-  // Battery discharge was avoiding high-rate imports, so without battery those become grid imports
-  // The additional imports from battery discharge should be costed at highest rate
+  // Battery discharge was avoiding imports - use actual TOU breakdown when available
   const highestRate = getHighestRatePeriod();
   let solarOnlyImportCost: number;
-  if (analysis.hasPowerData && touTotal(analysis.overall.importByTOU) > 0) {
-    // Actual imports at their actual TOU rates, plus battery discharge at highest rate
-    // (Battery discharge was primarily avoiding expensive imports)
+  if (analysis.hasPowerData && touTotal(analysis.overall.batteryDischargeTOU) > 0) {
+    // Use actual TOU breakdown of when battery discharged (more accurate than assuming highest rate)
+    solarOnlyImportCost = actualImportCost + calculateTOUCost(analysis.overall.batteryDischargeTOU);
+  } else if (analysis.hasPowerData && touTotal(analysis.overall.importByTOU) > 0) {
+    // Fallback: assume discharge at highest rate
     solarOnlyImportCost = actualImportCost + (analysis.overall.batteryDischarge * highestRate.rate);
   } else {
-    // Fallback: Battery discharge becomes grid imports at highest rate
+    // No TOU data: use weighted average
     solarOnlyImportCost = solarOnlyImport * fallbackAvgRate +
                           analysis.overall.batteryDischarge * (highestRate.rate - fallbackAvgRate);
   }
