@@ -99,7 +99,9 @@ interface PeriodBill {
 interface TariffBill {
   tariffName: string;
   importCost: number;
-  feedInRevenue: number;
+  feedInCredit: number;   // Credit from positive feed-in rate periods
+  exportCharge: number;   // Charge from negative feed-in rate periods
+  feedInRevenue: number;  // Net: feedInCredit - exportCharge (for backward compat)
   netCost: number;
   avgRate: number;      // $/kWh effective rate
 }
@@ -307,12 +309,27 @@ function calculateTariffCost(
     importCost = gridImport * helpers.calculateWeightedAvgRate(fallbackDist);
   }
 
-  // Calculate feed-in revenue
+  // Calculate feed-in (credit and charges)
+  let feedInCredit: number;
+  let exportCharge: number;
   let feedInRevenue: number;
+
   if (hasTOUData && helpers.hasTOUFeedIn()) {
-    feedInRevenue = helpers.calculateFeedInRevenue(exportByTOU);
+    const result = helpers.calculateFeedInRevenue(exportByTOU);
+    feedInCredit = result.feedInCredit;
+    exportCharge = result.exportCharge;
+    feedInRevenue = result.netFeedIn;
   } else {
-    feedInRevenue = gridExport * helpers.tariff.feedInTariff;
+    // Flat rate - check if negative (export charge)
+    const value = gridExport * helpers.tariff.feedInTariff;
+    if (value >= 0) {
+      feedInCredit = value;
+      exportCharge = 0;
+    } else {
+      feedInCredit = 0;
+      exportCharge = -value;
+    }
+    feedInRevenue = feedInCredit - exportCharge;
   }
 
   const netCost = importCost - feedInRevenue;
@@ -321,6 +338,8 @@ function calculateTariffCost(
   return {
     tariffName: helpers.tariff.name,
     importCost,
+    feedInCredit,
+    exportCharge,
     feedInRevenue,
     netCost,
     avgRate,
@@ -510,13 +529,21 @@ function printComparisonSummary(
 
   console.log(`\n  ${t1}:`);
   console.log(`    Import cost:      ${fmtMoney(c1.importCost)}`);
-  console.log(`    Feed-in revenue:  ${fmtMoney(c1.feedInRevenue)}`);
+  console.log(`    Feed-in credit:   ${fmtMoney(c1.feedInCredit)}`);
+  if (c1.exportCharge > 0) {
+    console.log(`    Export charge:    ${fmtMoney(c1.exportCharge)}`);
+  }
+  console.log(`    Net feed-in:      ${fmtMoney(c1.feedInRevenue)}`);
   console.log(`    Net cost:         ${fmtMoney(c1.netCost)}`);
   console.log(`    Avg import rate:  ${fmtMoney(c1.avgRate)}/kWh`);
 
   console.log(`\n  ${t2}:`);
   console.log(`    Import cost:      ${fmtMoney(c2.importCost)}`);
-  console.log(`    Feed-in revenue:  ${fmtMoney(c2.feedInRevenue)}`);
+  console.log(`    Feed-in credit:   ${fmtMoney(c2.feedInCredit)}`);
+  if (c2.exportCharge > 0) {
+    console.log(`    Export charge:    ${fmtMoney(c2.exportCharge)}`);
+  }
+  console.log(`    Net feed-in:      ${fmtMoney(c2.feedInRevenue)}`);
   console.log(`    Net cost:         ${fmtMoney(c2.netCost)}`);
   console.log(`    Avg import rate:  ${fmtMoney(c2.avgRate)}/kWh`);
 
@@ -635,7 +662,11 @@ function main(): void {
     if (cost) {
       console.log(`\n  ${name}:`);
       console.log(`    Total import cost:  ${fmtMoney(cost.importCost)}`);
-      console.log(`    Total feed-in:      ${fmtMoney(cost.feedInRevenue)}`);
+      console.log(`    Feed-in credit:     ${fmtMoney(cost.feedInCredit)}`);
+      if (cost.exportCharge > 0) {
+        console.log(`    Export charge:      ${fmtMoney(cost.exportCharge)}`);
+      }
+      console.log(`    Net feed-in:        ${fmtMoney(cost.feedInRevenue)}`);
       console.log(`    Total net cost:     ${fmtMoney(cost.netCost)}`);
       console.log(`    Avg daily cost:     ${fmtMoney(cost.netCost / summary.overall.days)}/day`);
       console.log(`    Projected annual:   ${fmtMoney((cost.netCost / summary.overall.days) * 365)}/year`);

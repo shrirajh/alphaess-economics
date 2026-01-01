@@ -76,6 +76,8 @@ Create `./tariffs/default.json` with your electricity rates. Example for a Victo
 
 Or use the tariff scraper to generate one automatically from your retailer's published rates (see below).
 
+Negative feed-in rates (export charges) are supported. If your tariff charges you to export during certain periods, use negative values in `feedInPeriods` and the tools will show credits and charges separately.
+
 ## Commands
 
 ### dump-stats.ts

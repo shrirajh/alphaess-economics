@@ -114,11 +114,19 @@ interface SolarDegradation {
   hasEnoughData: boolean;
 }
 
+interface SavingsScenario {
+  totalImportCost: number;
+  totalFeedInCredit?: number;    // Credit from positive feed-in rates
+  totalExportCharge?: number;    // Charge from negative feed-in rates
+  totalFeedInRevenue: number;    // Net: credit - charge
+  totalNetCost: number;
+}
+
 interface SavingsComparison {
-  actual: { totalImportCost: number; totalFeedInRevenue: number; totalNetCost: number };
-  solarOnly: { totalImportCost: number; totalFeedInRevenue: number; totalNetCost: number };
+  actual: SavingsScenario;
+  solarOnly: SavingsScenario;
   noSolar: { totalImportCost: number; totalNetCost: number };
-  optimal: { totalImportCost: number; totalFeedInRevenue: number; totalNetCost: number };
+  optimal: SavingsScenario;
   savingsFromBattery: number;
   savingsFromSolar: number;
   totalSavings: number;
@@ -1016,39 +1024,63 @@ function renderSavingsSection(report: Report): string {
   const solarArbPct = totalBatteryValue > 0 ? (s.solarArbitrageValue / totalBatteryValue * 100) : 0;
   const gridArbPct = totalBatteryValue > 0 ? (s.gridArbitrageValue / totalBatteryValue * 100) : 0;
 
+  // Check if any scenario has export charges
+  const hasExportCharges = (s.actual.totalExportCharge ?? 0) > 0 ||
+                           (s.solarOnly.totalExportCharge ?? 0) > 0 ||
+                           (s.optimal.totalExportCharge ?? 0) > 0;
+
+  const exportChargeHeader = hasExportCharges ? '<th>Export Charge</th>' : '';
+  const feedInHeader = hasExportCharges ? 'Feed-in Credit' : 'Feed-in Revenue';
+
+  const formatFeedIn = (scenario: SavingsScenario) => {
+    if (hasExportCharges) {
+      return `<td class="numeric">${fmtCurrency(scenario.totalFeedInCredit ?? scenario.totalFeedInRevenue)}</td>
+              <td class="numeric">${fmtCurrency(scenario.totalExportCharge ?? 0)}</td>`;
+    }
+    return `<td class="numeric">${fmtCurrency(scenario.totalFeedInRevenue)}</td>`;
+  };
+
   return `
     <section>
       <h2>Retrospective Savings Analysis</h2>
       <p>Comparison of actual costs vs hypothetical scenarios over ${fmt(years, 1)} years of data.</p>
+      ${hasExportCharges ? `
+      <div class="notice warning">
+        <strong>Export Charges Apply</strong>
+        <p>Your tariff includes negative feed-in rates (export charges) during certain periods.
+           You may be charged for exporting electricity to the grid.</p>
+      </div>
+      ` : ''}
 
       <h3>Scenario Comparison</h3>
       <table>
         <thead>
-          <tr><th>Scenario</th><th>Grid Cost</th><th>Feed-in Revenue</th><th>Net Cost</th></tr>
+          <tr><th>Scenario</th><th>Grid Cost</th><th>${feedInHeader}</th>${exportChargeHeader}<th>Net Cost</th></tr>
         </thead>
         <tbody>
           <tr>
             <td>No Solar (grid only)</td>
             <td class="numeric">${fmtCurrency(s.noSolar.totalImportCost)}</td>
             <td class="numeric">$0</td>
+            ${hasExportCharges ? '<td class="numeric">$0</td>' : ''}
             <td class="numeric">${fmtCurrency(s.noSolar.totalNetCost)}</td>
           </tr>
           <tr>
             <td>Solar Only (no battery)</td>
             <td class="numeric">${fmtCurrency(s.solarOnly.totalImportCost)}</td>
-            <td class="numeric">${fmtCurrency(s.solarOnly.totalFeedInRevenue)}</td>
+            ${formatFeedIn(s.solarOnly)}
             <td class="numeric">${fmtCurrency(s.solarOnly.totalNetCost)}</td>
           </tr>
           <tr>
             <td>Solar + Battery (actual)</td>
             <td class="numeric">${fmtCurrency(s.actual.totalImportCost)}</td>
-            <td class="numeric">${fmtCurrency(s.actual.totalFeedInRevenue)}</td>
+            ${formatFeedIn(s.actual)}
             <td class="numeric">${fmtCurrency(s.actual.totalNetCost)}</td>
           </tr>
           <tr class="highlight-row">
             <td>Solar + Battery (optimal control)</td>
             <td class="numeric">${fmtCurrency(s.optimal.totalImportCost)}</td>
-            <td class="numeric">${fmtCurrency(s.optimal.totalFeedInRevenue)}</td>
+            ${formatFeedIn(s.optimal)}
             <td class="numeric">${fmtCurrency(s.optimal.totalNetCost)}</td>
           </tr>
         </tbody>

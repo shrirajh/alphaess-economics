@@ -35,6 +35,12 @@ export interface RateLookupResult {
   rate: number;
 }
 
+export interface FeedInResult {
+  feedInCredit: number;   // Total from periods with rate >= 0
+  exportCharge: number;   // Total from periods with rate < 0 (stored as positive)
+  netFeedIn: number;      // feedInCredit - exportCharge (for backward compat)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // DAY PATTERN MATCHING
 // ═══════════════════════════════════════════════════════════════════════════
@@ -71,12 +77,36 @@ export function getDayType(dayOfWeek: number, tariff: Tariff): string {
 // TARIFF LOADING
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Check if a tariff has any negative feed-in rates (export charges).
+ * Used to display notices when loading tariffs with export charges.
+ */
+export function tariffHasExportCharges(tariff: Tariff): boolean {
+  if (tariff.feedInTariff < 0) return true;
+  if (!tariff.feedInPeriods) return false;
+  for (const periods of Object.values(tariff.feedInPeriods)) {
+    for (const period of periods) {
+      if (period.rate < 0) return true;
+    }
+  }
+  return false;
+}
+
+function logTariffLoaded(tariff: Tariff, source?: string): void {
+  const fromText = source ? ` from ${source}` : '';
+  console.log(`📋 Loaded tariff: ${tariff.name}${fromText}`);
+  if (tariffHasExportCharges(tariff)) {
+    console.log(`⚠️  Notice: This tariff has export charges (negative feed-in rates)`);
+    console.log(`   You may be charged for exporting during certain periods.`);
+  }
+}
+
 export function loadTariff(tariffPath?: string): Tariff {
   // Check for explicit path first
   if (tariffPath) {
     try {
       const tariffData = JSON.parse(fs.readFileSync(tariffPath, 'utf8')) as Tariff;
-      console.log(`📋 Loaded tariff: ${tariffData.name} from ${tariffPath}`);
+      logTariffLoaded(tariffData, tariffPath);
       return tariffData;
     } catch (e) {
       console.error(`❌ Failed to load tariff from ${tariffPath}: ${e}`);
@@ -90,7 +120,7 @@ export function loadTariff(tariffPath?: string): Tariff {
   if (tariffArg) {
     try {
       const tariffData = JSON.parse(fs.readFileSync(tariffArg, 'utf8')) as Tariff;
-      console.log(`📋 Loaded tariff: ${tariffData.name} from ${tariffArg}`);
+      logTariffLoaded(tariffData, tariffArg);
       return tariffData;
     } catch (e) {
       console.error(`❌ Failed to load tariff from ${tariffArg}: ${e}`);
@@ -103,7 +133,7 @@ export function loadTariff(tariffPath?: string): Tariff {
   if (fs.existsSync(defaultTariffPath)) {
     try {
       const tariffData = JSON.parse(fs.readFileSync(defaultTariffPath, 'utf8')) as Tariff;
-      console.log(`📋 Loaded tariff: ${tariffData.name}`);
+      logTariffLoaded(tariffData);
       return tariffData;
     } catch (e) {
       console.warn(`⚠️  Failed to load default tariff: ${e}`);
@@ -259,18 +289,37 @@ export function createTariffHelpers(tariff: Tariff) {
     return tariff.feedInTariff;
   }
 
-  function calculateFeedInRevenue(exportByFeedInPeriod: TOUBreakdown): number {
+  function hasNegativeFeedInRates(): boolean {
+    return tariffHasExportCharges(tariff);
+  }
+
+  function calculateFeedInRevenue(exportByFeedInPeriod: TOUBreakdown): FeedInResult {
+    let feedInCredit = 0;
+    let exportCharge = 0;
+
     // If no TOU feed-in or empty breakdown, use flat rate with total
     if (!tariff.feedInPeriods || Object.keys(exportByFeedInPeriod).length === 0) {
       const total = Object.values(exportByFeedInPeriod).reduce((sum, v) => sum + v, 0);
-      return total * tariff.feedInTariff;
+      const value = total * tariff.feedInTariff;
+      if (value >= 0) {
+        feedInCredit = value;
+      } else {
+        exportCharge = -value; // Store as positive
+      }
+      return { feedInCredit, exportCharge, netFeedIn: feedInCredit - exportCharge };
     }
 
-    let revenue = 0;
     for (const [periodName, kwh] of Object.entries(exportByFeedInPeriod)) {
-      revenue += kwh * getFeedInRateForPeriod(periodName);
+      const rate = getFeedInRateForPeriod(periodName);
+      const periodValue = kwh * rate;
+      if (periodValue >= 0) {
+        feedInCredit += periodValue;
+      } else {
+        exportCharge += -periodValue; // Store as positive
+      }
     }
-    return revenue;
+
+    return { feedInCredit, exportCharge, netFeedIn: feedInCredit - exportCharge };
   }
 
   function getFeedInPeriodsByRate(): { name: string; rate: number }[] {
@@ -302,6 +351,7 @@ export function createTariffHelpers(tariff: Tariff) {
     getLowestRatePeriod,
     // Feed-in helpers
     hasTOUFeedIn,
+    hasNegativeFeedInRates,
     getFeedInRate,
     emptyFeedInBreakdown,
     getFeedInRateForPeriod,

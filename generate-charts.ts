@@ -243,9 +243,17 @@ interface Scenario {
   roi: number;
 }
 
+interface SavingsScenario {
+  totalImportCost: number;
+  totalFeedInCredit?: number;    // Credit from positive feed-in rates
+  totalExportCharge?: number;    // Charge from negative feed-in rates
+  totalFeedInRevenue: number;    // Net: credit - charge
+  totalNetCost: number;
+}
+
 interface SavingsComparison {
-  actual: { totalImportCost: number; totalFeedInRevenue: number; totalNetCost: number };
-  solarOnly: { totalImportCost: number; totalFeedInRevenue: number; totalNetCost: number };
+  actual: SavingsScenario;
+  solarOnly: SavingsScenario;
   noSolar: { totalImportCost: number; totalNetCost: number };
   savingsFromBattery: number;
   savingsFromSolar: number;

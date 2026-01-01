@@ -179,7 +179,10 @@ interface PlanCost {
   retailerCode: string;
   dailySupplyCharge: number;
   importCost: number;
-  feedInRevenue: number;
+  feedInCredit: number;     // Credit from positive feed-in rate periods
+  exportCharge: number;     // Charge from negative feed-in rate periods
+  feedInRevenue: number;    // Net: feedInCredit - exportCharge
+  hasExportCharges: boolean; // True if tariff has negative feed-in rates
   annualFees: number;  // Membership fees, etc.
   netCost: number;
   annualizedCost: number;
@@ -202,7 +205,10 @@ interface CachedCalculation {
   retailerCode: string;
   dailySupplyCharge: number;
   importCost: number;
+  feedInCredit: number;
+  exportCharge: number;
   feedInRevenue: number;
+  hasExportCharges: boolean;
   annualFees: number;
   netCost: number;
   annualizedCost: number;
@@ -789,13 +795,21 @@ function calculatePlanCost(
     importCost += kwh * rate;
   }
 
-  // Calculate feed-in revenue by hour
-  let feedInRevenue = 0;
+  // Calculate feed-in (credit and charges) by hour
+  let feedInCredit = 0;
+  let exportCharge = 0;
   for (let hour = 0; hour < 24; hour++) {
     const kwh = usage.exportByHour[hour] ?? 0;
     const { rate } = helpers.getFeedInRate(hour, 1);
-    feedInRevenue += kwh * rate;
+    const value = kwh * rate;
+    if (value >= 0) {
+      feedInCredit += value;
+    } else {
+      exportCharge += -value; // Store as positive
+    }
   }
+  const feedInRevenue = feedInCredit - exportCharge;
+  const hasExportCharges = helpers.hasNegativeFeedInRates();
 
   // Daily supply charge
   const dailyCharge = (tariff.dailySupplyCharge ?? 0) * usage.days;
@@ -822,7 +836,10 @@ function calculatePlanCost(
     retailerCode,
     dailySupplyCharge: tariff.dailySupplyCharge ?? 0,
     importCost,
+    feedInCredit,
+    exportCharge,
     feedInRevenue,
+    hasExportCharges,
     annualFees,
     netCost,
     annualizedCost,
@@ -932,12 +949,17 @@ async function main(): Promise<void> {
     // Check if we have a valid cached calculation
     const cachedEntry = calcCache.entries[plan.planId];
     if (cachedEntry && cachedEntry.usageFingerprint === usageFingerprint) {
-      // Use cached result
+      // Use cached result (with backward compat for old cache entries)
       calcCacheHits++;
+      const calc = cachedEntry.calculation;
       costs.push({
-        ...cachedEntry.calculation,
+        ...calc,
         tariff: cachedEntry.tariff,
-        requiresVpp: cachedEntry.calculation.requiresVpp ?? false,
+        requiresVpp: calc.requiresVpp ?? false,
+        // Backward compat: old cache entries may not have these fields
+        feedInCredit: calc.feedInCredit ?? Math.max(0, calc.feedInRevenue),
+        exportCharge: calc.exportCharge ?? Math.max(0, -calc.feedInRevenue),
+        hasExportCharges: calc.hasExportCharges ?? false,
       });
       continue;
     }
@@ -977,7 +999,10 @@ async function main(): Promise<void> {
             retailerCode: cost.retailerCode,
             dailySupplyCharge: cost.dailySupplyCharge,
             importCost: cost.importCost,
+            feedInCredit: cost.feedInCredit,
+            exportCharge: cost.exportCharge,
             feedInRevenue: cost.feedInRevenue,
+            hasExportCharges: cost.hasExportCharges,
             annualFees: cost.annualFees,
             netCost: cost.netCost,
             annualizedCost: cost.annualizedCost,
@@ -1141,10 +1166,17 @@ async function main(): Promise<void> {
     console.log('-'.repeat(50));
     console.log(`    Daily supply: $${c.dailySupplyCharge.toFixed(4)}/day`);
     console.log(`    Import cost:  $${c.importCost.toFixed(2)}`);
-    console.log(`    Feed-in:      $${c.feedInRevenue.toFixed(2)}`);
+    console.log(`    Feed-in credit: $${c.feedInCredit.toFixed(2)}`);
+    if (c.exportCharge > 0) {
+      console.log(`    Export charge:  $${c.exportCharge.toFixed(2)}`);
+    }
+    console.log(`    Net feed-in:    $${c.feedInRevenue.toFixed(2)}`);
     console.log(`    Net cost:     $${c.netCost.toFixed(2)} (over ${usage.days} days)`);
     console.log(`    Annualized:   $${c.annualizedCost.toFixed(0)}/year`);
     console.log(`    Avg import:   $${c.avgImportRate.toFixed(4)}/kWh`);
+    if (c.hasExportCharges) {
+      console.log(`    ⚠️  This plan has export charges (negative feed-in rates)`);
+    }
 
     // Show rates
     const t = c.tariff;

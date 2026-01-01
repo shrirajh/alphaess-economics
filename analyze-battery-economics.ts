@@ -892,7 +892,8 @@ function calculatePeriodAnalysis(totals: PeriodTotals): PeriodAnalysis {
   let dailyFeedInRevenue: number;
   if (hasTOUData && hasTOUFeedIn() && touTotal(totals.exportByFeedInPeriod) > 0) {
     // Use actual export TOU breakdown with feed-in period rates
-    dailyFeedInRevenue = calculateFeedInRevenue(totals.exportByFeedInPeriod) / days;
+    const result = calculateFeedInRevenue(totals.exportByFeedInPeriod);
+    dailyFeedInRevenue = result.netFeedIn / days;
   } else {
     // Fall back to flat rate
     dailyFeedInRevenue = avgDaily.gridExport * TARIFF.feedInTariff;
@@ -1350,7 +1351,7 @@ function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
   }
   // Calculate feed-in revenue using TOU rates when available
   const actualFeedInRevenue = (analysis.hasPowerData && hasTOUFeedIn() && touTotal(analysis.overall.exportByFeedInPeriod) > 0)
-    ? calculateFeedInRevenue(analysis.overall.exportByFeedInPeriod)
+    ? calculateFeedInRevenue(analysis.overall.exportByFeedInPeriod).netFeedIn
     : analysis.overall.gridExport * TARIFF.feedInTariff;
   const actualNetCost = actualImportCost - actualFeedInRevenue;
 
@@ -1386,7 +1387,7 @@ function calculateSavingsComparison(analysis: Analysis): SavingsComparison {
   // For solar-only, we'd export more (battery charge goes to grid instead)
   // Use actual average feed-in rate when available, otherwise flat rate
   const avgFeedInRate = (analysis.hasPowerData && hasTOUFeedIn() && touTotal(analysis.overall.exportByFeedInPeriod) > 0)
-    ? calculateFeedInRevenue(analysis.overall.exportByFeedInPeriod) / analysis.overall.gridExport
+    ? calculateFeedInRevenue(analysis.overall.exportByFeedInPeriod).netFeedIn / analysis.overall.gridExport
     : TARIFF.feedInTariff;
   const solarOnlyFeedInRevenue = solarOnlyExport * avgFeedInRate;
   const solarOnlyNetCost = solarOnlyImportCost - solarOnlyFeedInRevenue;
