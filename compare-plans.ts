@@ -17,6 +17,8 @@ interface CliArgs {
   force: boolean;
   excludeConditions: boolean;
   excludeVpp: boolean;     // Exclude plans requiring VPP
+  allowNoLifeSupport: boolean;  // Allow plans that exclude life support customers
+  allowHighIncome: boolean;     // Allow plans requiring high income
   currentTariff?: string;  // Path to current tariff JSON for comparison
   save: boolean;           // Save top N as JSON files
   outputDir: string;       // Directory to save JSON files
@@ -32,6 +34,8 @@ function parseArgs(): CliArgs {
     force: false,
     excludeConditions: false,
     excludeVpp: false,
+    allowNoLifeSupport: false,
+    allowHighIncome: false,
     save: false,
     outputDir: './tariffs',
   };
@@ -51,6 +55,10 @@ function parseArgs(): CliArgs {
       result.excludeConditions = true;
     } else if (arg === '--exclude-vpp' || arg === '--no-vpp') {
       result.excludeVpp = true;
+    } else if (arg === '--allow-no-life-support') {
+      result.allowNoLifeSupport = true;
+    } else if (arg === '--allow-high-income') {
+      result.allowHighIncome = true;
     } else if (arg.startsWith('--current=')) {
       result.currentTariff = arg.slice(10);
     } else if (arg === '--save') {
@@ -88,6 +96,8 @@ Options:
   --force, -f         Force recalculation (ignore cache)
   --exclude-conditions  Exclude plans with eligibility conditions
   --exclude-vpp       Exclude plans requiring VPP (Virtual Power Plant)
+  --allow-no-life-support  Include plans that exclude life support customers
+  --allow-high-income      Include plans requiring high income ($100k+)
   --verbose, -v       Show detailed output
   --help, -h          Show this help
 
@@ -1014,20 +1024,30 @@ async function main(): Promise<void> {
       'new customer', 'new agl', 'new to',   // New customers only
       'existing customer', 'existing agl',   // Existing customers only
       'seniors card', 'concession',          // Special cards required
+      'centrelink',                          // Government payment recipients excluded
       'velocity', 'flybuys', 'rewards',      // Membership required
       'westpac', 'commbank', 'anz', 'nab',   // Bank partnership
       'bp rewards', 'ampol',                 // Fuel partnership
       'direct debit only',                   // Payment method required
       'greenpower',                          // GreenPower requirement (costs extra)
+      'payment plan', 'payment assistance',  // No hardship customers
+      // Life support restrictions (can be allowed with --allow-no-life-support)
+      ...(args.allowNoLifeSupport ? [] : ['no life support', 'life support']),
+      // Income/investor requirements (can be allowed with --allow-high-income)
+      ...(args.allowHighIncome ? [] : ['sophisticated investor', 'income over', 'income above', 'non-pensioner']),
     ];
 
     filteredCosts = costs.filter(c => {
       // Check if any condition contains restrictive keywords
-      const hasRestrictive = c.conditions.some(cond => {
+      const hasRestrictiveCondition = c.conditions.some(cond => {
         const info = cond.info.toLowerCase();
         return restrictiveKeywords.some(kw => info.includes(kw));
       });
-      return !hasRestrictive;
+      // Also check plan name for restricted plan types
+      const hasRestrictiveName = restrictiveKeywords.some(kw =>
+        c.planName.toLowerCase().includes(kw)
+      );
+      return !hasRestrictiveCondition && !hasRestrictiveName;
     });
 
     const excluded = costs.length - filteredCosts.length;
@@ -1092,6 +1112,8 @@ async function main(): Promise<void> {
     const rank = (i + 1).toString();
     const planName = c.planName.slice(0, 33);
     const retailer = c.retailer.slice(0, 18);
+    const planIdForUrl = c.planId.split('@')[0];
+    const planUrl = `https://www.energymadeeasy.gov.au/plan?id=${planIdForUrl}&postcode=${args.postcode}`;
 
     console.log(
       rank.padStart(3) +
@@ -1100,6 +1122,7 @@ async function main(): Promise<void> {
       `$${c.netCost.toFixed(2)}`.padStart(12) +
       `$${c.annualizedCost.toFixed(0)}/yr`.padStart(12)
     );
+    console.log(`    ${planUrl}`);
   }
 
   // Detailed view of top 3
@@ -1109,9 +1132,12 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < Math.min(3, topN.length); i++) {
     const c = topN[i]!;
+    const planIdForUrl = c.planId.split('@')[0];  // Strip @EME/@VEC suffix
+    const planUrl = `https://www.energymadeeasy.gov.au/plan?id=${planIdForUrl}&postcode=${args.postcode}`;
     console.log(`\n#${i + 1}: ${c.planName}${c.requiresVpp ? ' [VPP REQUIRED]' : ''}`);
     console.log(`    Retailer: ${c.retailer}`);
     console.log(`    Plan ID: ${c.planId}`);
+    console.log(`    ${planUrl}`);
     console.log('-'.repeat(50));
     console.log(`    Daily supply: $${c.dailySupplyCharge.toFixed(4)}/day`);
     console.log(`    Import cost:  $${c.importCost.toFixed(2)}`);
