@@ -1745,13 +1745,17 @@ interface OptimizationIssue {
   howToFix: string[];
 }
 
-function generateOptimizationRecommendations(analysis: Analysis, params?: BatteryParameters): OptimizationIssue[] {
+function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, params?: BatteryParameters): OptimizationIssue[] {
   const issues: OptimizationIssue[] = [];
   const peakRate = getRateForPeriod('peak');
   const offpeakRate = getRateForPeriod('offpeak');
   const feedInRate = TARIFF.feedInTariff;
   const efficiency = params?.efficiency ?? BATTERY_EFFICIENCY;
   const usableCapacity = params?.usableCapacityPercent ?? USABLE_CAPACITY_PERCENT;
+
+  // Get current config
+  const system = stats.systems[0];
+  const currentDischarge = system?.dischargeConfig ?? null;
 
   // Get peak hours from tariff for recommendations
   const peakHours = TARIFF.periods?.everyday?.find((p: { name: string }) => p.name === 'peak')?.hours as number[] | undefined;
@@ -1854,6 +1858,32 @@ function generateOptimizationRecommendations(analysis: Analysis, params?: Batter
         impact: `Discharging ${fmt(offpeakDischargeDaily, 1)} kWh/day during cheap off-peak while still importing ${fmt(peakImportDaily, 1)} kWh/day during expensive peak`,
         annualValue: redirectValue,
         howToFix
+      });
+    } else if (currentDischarge && currentDischarge.ctrDis !== 1) {
+      // Config issue: discharge control disabled but battery is performing OK
+      // Still worth noting as a potential future risk
+      issues.push({
+        severity: 'low',
+        issue: `Discharge time control is DISABLED (ctrDis=0)`,
+        impact: `Battery performs OK now (${fmt(peakDischargePercent, 0)}% to peak) but settings aren't locked in - usage pattern changes could waste discharge`,
+        annualValue: redirectValue > 0 ? redirectValue : 0,
+        howToFix: [
+          '📊 CURRENT PERFORMANCE:',
+          `   Peak discharge:     ${fmt(peakDischargeDaily, 1)} kWh/day (${fmt(peakDischargePercent, 0)}%)`,
+          `   Off-peak discharge: ${fmt(offpeakDischargeDaily, 1)} kWh/day (${fmt(offpeakDischargePercent, 0)}%)`,
+          `   → Currently OK, but not guaranteed!`,
+          '',
+          '⚠️  WHY ENABLE DISCHARGE CONTROL?',
+          '   Your battery happens to discharge mostly during peak NOW',
+          '   But this depends on your usage patterns staying the same.',
+          '   Enabling time control LOCKS IN peak-only discharge.',
+          '',
+          '🔧 HOW TO FIX:',
+          '   1. Open AlphaESS app → Settings → Function Setting',
+          '   2. Enable "Battery Discharge Time Control"',
+          `   3. Set discharge period to: ${peakHoursDesc}`,
+          '   4. This ensures battery ALWAYS prioritizes peak hours',
+        ]
       });
     }
   }
@@ -2170,7 +2200,8 @@ function generateRecommendedConfig(
   sysSn: string,
   currentDischarge: DischargeConfig | null,
   currentCharge: ChargeConfig | null,
-  analysis: Analysis
+  analysis: Analysis,
+  stats: Stats
 ): RecommendedConfig {
   const peakPeriods = getPeakPeriodsFromTariff();
   const offpeakPeriods = getOffpeakPeriodsFromTariff();
@@ -2196,7 +2227,7 @@ function generateRecommendedConfig(
   };
 
   // Calculate estimated savings from fixing config
-  const issues = generateOptimizationRecommendations(analysis);
+  const issues = generateOptimizationRecommendations(analysis, stats);
   const estimatedSavings = issues.reduce((sum, i) => sum + i.annualValue, 0);
 
   // Generate reasoning
@@ -2255,61 +2286,28 @@ function printAndSaveConfig(stats: Stats, analysis: Analysis): void {
   const currentDischarge = system.dischargeConfig ?? null;
   const currentCharge = system.chargeConfig ?? null;
 
-  console.log('\n⚙️  CURRENT BATTERY CONFIGURATION');
+  // Generate recommended config
+  const recommended = generateRecommendedConfig(sysSn, currentDischarge, currentCharge, analysis, stats);
+
+  console.log('\n⚙️  RECOMMENDED BATTERY CONFIGURATION');
   console.log('═'.repeat(95));
-
-  // Show current discharge config
-  console.log('\n  DISCHARGE CONFIG:');
-  if (currentDischarge && currentDischarge.ctrDis !== undefined) {
-    const lines = formatDischargeConfig({
-      ctrDis: currentDischarge.ctrDis ?? 0,
-      batUseCap: currentDischarge.batUseCap ?? 15,
-      timeDisf1: currentDischarge.timeDisf1 ?? '00:00',
-      timeDise1: currentDischarge.timeDise1 ?? '00:00',
-      timeDisf2: currentDischarge.timeDisf2 ?? '00:00',
-      timeDise2: currentDischarge.timeDise2 ?? '00:00',
-    });
-    for (const line of lines) console.log('  ' + line);
-
-    // Highlight issues
-    if (currentDischarge.ctrDis !== 1) {
-      console.log('    ⚠️  PROBLEM: Discharge control is DISABLED - battery discharges all day!');
-    }
-  } else {
-    console.log('    (not available - run dump-stats.ts to fetch)');
-  }
-
-  // Show current charge config
-  console.log('\n  CHARGE CONFIG:');
-  if (currentCharge) {
-    const lines = formatChargeConfig(currentCharge);
-    for (const line of lines) console.log('  ' + line);
-  } else {
-    console.log('    (not available - run dump-stats.ts to fetch)');
-  }
-
-  // Generate and show recommended config
-  const recommended = generateRecommendedConfig(sysSn, currentDischarge, currentCharge, analysis);
-
-  console.log('\n  RECOMMENDED CONFIGURATION (for ' + TARIFF.name + '):');
-  console.log('─'.repeat(95));
-
-  console.log('\n  DISCHARGE (restrict to peak hours):');
-  const recDischargeLines = formatDischargeConfig(recommended.recommendedConfig.discharge);
-  for (const line of recDischargeLines) {
-    console.log('  ' + line);
-  }
+  console.log(`  Optimized for: ${TARIFF.name}`);
 
   const peakRate = getRateForPeriod('peak');
+  const offpeakRate = getRateForPeriod('offpeak');
+
+  console.log('\n  📤 DISCHARGE (restrict to peak hours):');
+  const recDischargeLines = formatDischargeConfig(recommended.recommendedConfig.discharge);
+  for (const line of recDischargeLines) {
+    console.log('    ' + line);
+  }
   console.log(`    → Discharge only during peak @ $${fmt(peakRate, 2)}/kWh`);
 
-  console.log('\n  CHARGE (optional - for grid arbitrage):');
+  console.log('\n  📥 CHARGE (for grid arbitrage):');
   const recChargeLines = formatChargeConfig(recommended.recommendedConfig.charge);
   for (const line of recChargeLines) {
-    console.log('  ' + line);
+    console.log('    ' + line);
   }
-
-  const offpeakRate = getRateForPeriod('offpeak');
   console.log(`    → Charge from grid during off-peak @ $${fmt(offpeakRate, 2)}/kWh`);
 
   // Save recommended config
@@ -2322,8 +2320,11 @@ function printAndSaveConfig(stats: Stats, analysis: Analysis): void {
   console.log('');
 }
 
-function printOptimizationRecommendations(analysis: Analysis, params?: BatteryParameters): void {
-  const issues = generateOptimizationRecommendations(analysis, params);
+function printOptimizationRecommendations(stats: Stats, analysis: Analysis, params?: BatteryParameters): void {
+  const issues = generateOptimizationRecommendations(analysis, stats, params);
+  const system = stats.systems[0];
+  const currentDischarge = system?.dischargeConfig ?? null;
+  const currentCharge = system?.chargeConfig ?? null;
 
   if (issues.length === 0) {
     console.log('\n✅ BATTERY OPTIMIZATION');
@@ -2350,6 +2351,38 @@ function printOptimizationRecommendations(analysis: Analysis, params?: BatteryPa
     console.log(`     Severity: ${severityLabel} | Potential value: $${fmt(issue.annualValue, 0)}/year`);
     console.log(`     Impact: ${issue.impact}`);
     console.log('');
+
+    // Show current config relevant to this issue
+    if (issue.issue.includes('discharge timing') || issue.issue.includes('Discharge time control')) {
+      console.log('     ⚙️  YOUR CURRENT DISCHARGE SETTINGS:');
+      if (currentDischarge && currentDischarge.ctrDis !== undefined) {
+        const lines = formatDischargeConfig({
+          ctrDis: currentDischarge.ctrDis ?? 0,
+          batUseCap: currentDischarge.batUseCap ?? 15,
+          timeDisf1: currentDischarge.timeDisf1 ?? '00:00',
+          timeDise1: currentDischarge.timeDise1 ?? '00:00',
+          timeDisf2: currentDischarge.timeDisf2 ?? '00:00',
+          timeDise2: currentDischarge.timeDise2 ?? '00:00',
+        });
+        for (const line of lines) console.log('       ' + line);
+        if (currentDischarge.ctrDis !== 1) {
+          console.log('       ⚠️  PROBLEM: Discharge control is DISABLED!');
+        }
+      } else {
+        console.log('       (not available - run dump-stats.ts to fetch)');
+      }
+      console.log('');
+    } else if (issue.issue.includes('charging from grid')) {
+      console.log('     ⚙️  YOUR CURRENT CHARGE SETTINGS:');
+      if (currentCharge) {
+        const lines = formatChargeConfig(currentCharge);
+        for (const line of lines) console.log('       ' + line);
+      } else {
+        console.log('       (not available - run dump-stats.ts to fetch)');
+      }
+      console.log('');
+    }
+
     console.log('     HOW TO FIX:');
     for (const step of issue.howToFix) {
       console.log(`       ${step}`);
@@ -2661,8 +2694,8 @@ function main() {
   // Battery Utilization Report (Phase 2: Ground truth from power data)
   if (analysis.hasPowerData) {
     printBatteryUtilizationReport(analysis);
+    printOptimizationRecommendations(stats, analysis, params);
     printAndSaveConfig(stats, analysis);
-    printOptimizationRecommendations(analysis, params);
   }
 
   // Battery Efficiency / Degradation
