@@ -19,6 +19,13 @@ import {
   PANEL_SUNK_COST,
   getSeason,
 } from './tariff-utils.js';
+import {
+  type ChargeConfig,
+  type DischargeConfig as FullDischargeConfig,
+  type RecommendedConfig,
+  formatChargeConfig,
+  formatDischargeConfig,
+} from './alphaess-api-helpers.js';
 
 // Parse CLI args for system selection (--sn=, --only=, --skip=)
 const targetSn = process.argv.find(a => a.startsWith('--sn='))?.slice(5)
@@ -74,10 +81,17 @@ interface SystemInfo {
 
 interface DischargeConfig {
   batUseCap?: number;  // Battery reserve percentage (e.g., 15 = 15% reserve)
+  ctrDis?: number;     // Enable discharge time control (0=off, 1=on)
+  timeDisf1?: string;  // Discharge period 1 start
+  timeDise1?: string;  // Discharge period 1 end
+  timeDisf2?: string;  // Discharge period 2 start
+  timeDise2?: string;  // Discharge period 2 end
 }
 
 interface SystemData {
   systemInfo?: SystemInfo;
+  sysSn?: string;
+  chargeConfig?: ChargeConfig;
   dischargeConfig?: DischargeConfig;
   historicalData: HistoricalDay[];
 }
@@ -936,6 +950,8 @@ function loadLatestStats(): Stats {
     for (const file of systemFiles) {
       try {
         const data = JSON.parse(fs.readFileSync(file, 'utf8')) as SystemData;
+        // Extract sysSn from filename (alphaess-data-{SN}.json)
+        data.sysSn = file.replace('alphaess-data-', '').replace('.json', '');
         systems.push(data);
         console.log(`📂 Loaded ${file} (${data.historicalData.length} days)`);
       } catch {
@@ -2043,6 +2059,269 @@ function generateOptimizationRecommendations(analysis: Analysis, params?: Batter
   return issues;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// GENERATE OPTIMAL BATTERY CONFIG
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface PeakPeriod {
+  start: string;
+  end: string;
+  rate: number;
+}
+
+/**
+ * Extract peak hour ranges from the tariff for discharge scheduling
+ */
+function getPeakPeriodsFromTariff(): PeakPeriod[] {
+  const periods: PeakPeriod[] = [];
+  const peakRate = getRateForPeriod('peak');
+
+  // Get all peak periods from the tariff
+  const dayTypes = Object.keys(TARIFF.periods || {});
+  const periodDefs = TARIFF.periods?.[dayTypes[0] ?? 'everyday'] ?? [];
+
+  // Group consecutive peak hours into periods
+  const peakHours = periodDefs
+    .filter(p => p.name === 'peak')
+    .flatMap(p => p.hours)
+    .sort((a, b) => a - b);
+
+  if (peakHours.length === 0) return periods;
+
+  // Group consecutive hours into periods
+  let periodStart = peakHours[0]!;
+  let periodEnd = peakHours[0]!;
+
+  for (let i = 1; i < peakHours.length; i++) {
+    const hour = peakHours[i]!;
+    if (hour === periodEnd + 1 || (periodEnd === 23 && hour === 0)) {
+      periodEnd = hour;
+    } else {
+      // End of a period - add it
+      periods.push({
+        start: `${String(periodStart).padStart(2, '0')}:00`,
+        end: `${String((periodEnd + 1) % 24).padStart(2, '0')}:00`,
+        rate: peakRate
+      });
+      periodStart = hour;
+      periodEnd = hour;
+    }
+  }
+
+  // Add final period
+  periods.push({
+    start: `${String(periodStart).padStart(2, '0')}:00`,
+    end: `${String((periodEnd + 1) % 24).padStart(2, '0')}:00`,
+    rate: peakRate
+  });
+
+  return periods;
+}
+
+/**
+ * Get off-peak periods for grid charging
+ */
+function getOffpeakPeriodsFromTariff(): PeakPeriod[] {
+  const periods: PeakPeriod[] = [];
+  const offpeakRate = getRateForPeriod('offpeak');
+
+  const dayTypes = Object.keys(TARIFF.periods || {});
+  const periodDefs = TARIFF.periods?.[dayTypes[0] ?? 'everyday'] ?? [];
+
+  const offpeakHours = periodDefs
+    .filter(p => p.name === 'offpeak')
+    .flatMap(p => p.hours)
+    .sort((a, b) => a - b);
+
+  if (offpeakHours.length === 0) return periods;
+
+  // Group consecutive hours into periods
+  let periodStart = offpeakHours[0]!;
+  let periodEnd = offpeakHours[0]!;
+
+  for (let i = 1; i < offpeakHours.length; i++) {
+    const hour = offpeakHours[i]!;
+    if (hour === periodEnd + 1 || (periodEnd === 23 && hour === 0)) {
+      periodEnd = hour;
+    } else {
+      periods.push({
+        start: `${String(periodStart).padStart(2, '0')}:00`,
+        end: `${String((periodEnd + 1) % 24).padStart(2, '0')}:00`,
+        rate: offpeakRate
+      });
+      periodStart = hour;
+      periodEnd = hour;
+    }
+  }
+
+  periods.push({
+    start: `${String(periodStart).padStart(2, '0')}:00`,
+    end: `${String((periodEnd + 1) % 24).padStart(2, '0')}:00`,
+    rate: offpeakRate
+  });
+
+  return periods;
+}
+
+/**
+ * Generate recommended battery config based on tariff
+ */
+function generateRecommendedConfig(
+  sysSn: string,
+  currentDischarge: DischargeConfig | null,
+  currentCharge: ChargeConfig | null,
+  analysis: Analysis
+): RecommendedConfig {
+  const peakPeriods = getPeakPeriodsFromTariff();
+  const offpeakPeriods = getOffpeakPeriodsFromTariff();
+
+  // Build recommended discharge config
+  const recommendedDischarge: FullDischargeConfig = {
+    ctrDis: 1,  // Enable discharge control
+    batUseCap: currentDischarge?.batUseCap ?? 15,  // Keep current reserve or default 15%
+    timeDisf1: peakPeriods[0]?.start ?? '06:00',
+    timeDise1: peakPeriods[0]?.end ?? '10:00',
+    timeDisf2: peakPeriods[1]?.start ?? '15:00',
+    timeDise2: peakPeriods[1]?.end ?? '21:00',
+  };
+
+  // Build recommended charge config
+  const recommendedCharge: ChargeConfig = {
+    gridCharge: 1,  // Enable for grid arbitrage
+    batHighCap: 100,  // Charge to 100%
+    timeChaf1: offpeakPeriods[0]?.start ?? '00:00',
+    timeChae1: offpeakPeriods[0]?.end ?? '06:00',
+    timeChaf2: '00:00',
+    timeChae2: '00:00',
+  };
+
+  // Calculate estimated savings from fixing config
+  const issues = generateOptimizationRecommendations(analysis);
+  const estimatedSavings = issues.reduce((sum, i) => sum + i.annualValue, 0);
+
+  // Generate reasoning
+  const reasoning: string[] = [];
+
+  if (!currentDischarge || currentDischarge.ctrDis !== 1) {
+    reasoning.push('Discharge control disabled - battery discharges during off-peak');
+  }
+
+  const offpeakDischargePct = analysis.overall.batteryDischargeTOU?.offpeak
+    ? ((analysis.overall.batteryDischargeTOU.offpeak / touTotal(analysis.overall.batteryDischargeTOU)) * 100)
+    : 0;
+
+  if (offpeakDischargePct > 10) {
+    const peakRate = getRateForPeriod('peak');
+    const offpeakRate = getRateForPeriod('offpeak');
+    reasoning.push(`${fmt(offpeakDischargePct, 0)}% of discharge wasted on $${fmt(offpeakRate, 2)}/kWh periods instead of $${fmt(peakRate, 2)}/kWh`);
+  }
+
+  if (peakPeriods.length > 0) {
+    reasoning.push(`Peak periods: ${peakPeriods.map(p => `${p.start}-${p.end}`).join(', ')}`);
+  }
+
+  return {
+    sysSn,
+    generatedAt: new Date().toISOString(),
+    tariff: TARIFF.name,
+    currentConfig: {
+      discharge: currentDischarge ? {
+        ctrDis: currentDischarge.ctrDis ?? 0,
+        batUseCap: currentDischarge.batUseCap ?? 15,
+        timeDisf1: currentDischarge.timeDisf1 ?? '00:00',
+        timeDise1: currentDischarge.timeDise1 ?? '00:00',
+        timeDisf2: currentDischarge.timeDisf2 ?? '00:00',
+        timeDise2: currentDischarge.timeDise2 ?? '00:00',
+      } : null,
+      charge: currentCharge ?? null,
+    },
+    recommendedConfig: {
+      discharge: recommendedDischarge,
+      charge: recommendedCharge,
+    },
+    estimatedAnnualSavings: estimatedSavings,
+    reasoning,
+  };
+}
+
+/**
+ * Print current config and save recommended config
+ */
+function printAndSaveConfig(stats: Stats, analysis: Analysis): void {
+  const system = stats.systems[0];
+  if (!system) return;
+
+  const sysSn = system.sysSn ?? 'unknown';
+  const currentDischarge = system.dischargeConfig ?? null;
+  const currentCharge = system.chargeConfig ?? null;
+
+  console.log('\n⚙️  CURRENT BATTERY CONFIGURATION');
+  console.log('═'.repeat(95));
+
+  // Show current discharge config
+  console.log('\n  DISCHARGE CONFIG:');
+  if (currentDischarge && currentDischarge.ctrDis !== undefined) {
+    const lines = formatDischargeConfig({
+      ctrDis: currentDischarge.ctrDis ?? 0,
+      batUseCap: currentDischarge.batUseCap ?? 15,
+      timeDisf1: currentDischarge.timeDisf1 ?? '00:00',
+      timeDise1: currentDischarge.timeDise1 ?? '00:00',
+      timeDisf2: currentDischarge.timeDisf2 ?? '00:00',
+      timeDise2: currentDischarge.timeDise2 ?? '00:00',
+    });
+    for (const line of lines) console.log('  ' + line);
+
+    // Highlight issues
+    if (currentDischarge.ctrDis !== 1) {
+      console.log('    ⚠️  PROBLEM: Discharge control is DISABLED - battery discharges all day!');
+    }
+  } else {
+    console.log('    (not available - run dump-stats.ts to fetch)');
+  }
+
+  // Show current charge config
+  console.log('\n  CHARGE CONFIG:');
+  if (currentCharge) {
+    const lines = formatChargeConfig(currentCharge);
+    for (const line of lines) console.log('  ' + line);
+  } else {
+    console.log('    (not available - run dump-stats.ts to fetch)');
+  }
+
+  // Generate and show recommended config
+  const recommended = generateRecommendedConfig(sysSn, currentDischarge, currentCharge, analysis);
+
+  console.log('\n  RECOMMENDED CONFIGURATION (for ' + TARIFF.name + '):');
+  console.log('─'.repeat(95));
+
+  console.log('\n  DISCHARGE (restrict to peak hours):');
+  const recDischargeLines = formatDischargeConfig(recommended.recommendedConfig.discharge);
+  for (const line of recDischargeLines) {
+    console.log('  ' + line);
+  }
+
+  const peakRate = getRateForPeriod('peak');
+  console.log(`    → Discharge only during peak @ $${fmt(peakRate, 2)}/kWh`);
+
+  console.log('\n  CHARGE (optional - for grid arbitrage):');
+  const recChargeLines = formatChargeConfig(recommended.recommendedConfig.charge);
+  for (const line of recChargeLines) {
+    console.log('  ' + line);
+  }
+
+  const offpeakRate = getRateForPeriod('offpeak');
+  console.log(`    → Charge from grid during off-peak @ $${fmt(offpeakRate, 2)}/kWh`);
+
+  // Save recommended config
+  const configFile = `recommended-config-${sysSn}.json`;
+  fs.writeFileSync(configFile, JSON.stringify(recommended, null, 2));
+
+  console.log('\n' + '─'.repeat(95));
+  console.log(`  💾 Saved: ${configFile}`);
+  console.log(`  🚀 Apply with: npx tsx optimize-battery.ts --config=${configFile}`);
+  console.log('');
+}
+
 function printOptimizationRecommendations(analysis: Analysis, params?: BatteryParameters): void {
   const issues = generateOptimizationRecommendations(analysis, params);
 
@@ -2382,6 +2661,7 @@ function main() {
   // Battery Utilization Report (Phase 2: Ground truth from power data)
   if (analysis.hasPowerData) {
     printBatteryUtilizationReport(analysis);
+    printAndSaveConfig(stats, analysis);
     printOptimizationRecommendations(analysis, params);
   }
 
