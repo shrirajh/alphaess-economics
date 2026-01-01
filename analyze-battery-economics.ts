@@ -2124,6 +2124,91 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CARBON IMPACT CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface CarbonImpact {
+  // Grid carbon intensities (g CO2/kWh)
+  gridCarbonDaytime: number;
+  gridCarbonNight: number;
+  gridCarbonPeak: number;
+  // Daily averages (kWh)
+  avgExport: number;
+  avgGridCharge: number;
+  avgSolarCharge: number;
+  avgPeakImport: number;
+  avgOffpeakImport: number;
+  // Carbon flows (kg CO2/day)
+  carbonSavedByExport: number;
+  carbonFromPeakImport: number;
+  carbonFromOffpeakImport: number;
+  carbonFromGridCharge: number;
+  totalCarbonImport: number;
+  // Battery metrics
+  batteryCleanPercent: number;
+  // Net position
+  netCarbonDaily: number;
+  netCarbonAnnual: number;
+}
+
+function calculateCarbonImpact(analysis: Analysis): CarbonImpact {
+  // Australian grid carbon intensity estimates (g CO2/kWh)
+  // Source: Australian Energy Market Operator (AEMO) data
+  const GRID_CARBON_DAYTIME = 450;   // g CO2/kWh - lower due to solar on grid
+  const GRID_CARBON_NIGHT = 750;     // g CO2/kWh - higher coal baseload at night
+  const GRID_CARBON_PEAK = 600;      // g CO2/kWh - gas peakers + coal
+
+  const days = analysis.overall.days || 1;
+
+  // Calculate actual carbon flows from data
+  const avgExport = analysis.overall.gridExport / days;
+  const gridChargeTotal = (analysis.overall.gridChargeTOU.offpeak ?? 0) +
+                          (analysis.overall.gridChargeTOU.peak ?? 0) +
+                          (analysis.overall.gridChargeTOU.shoulder ?? 0);
+  const avgGridCharge = gridChargeTotal / days;
+  const avgSolarCharge = analysis.overall.chargeFromSolar / days;
+  const avgPeakImport = (analysis.overall.importByTOU.peak ?? 0) / days;
+  const avgOffpeakImport = (analysis.overall.importByTOU.offpeak ?? 0) / days;
+
+  // Carbon saved by solar export (displaces grid generation)
+  const carbonSavedByExport = avgExport * GRID_CARBON_DAYTIME / 1000;  // kg CO2/day
+
+  // Carbon from grid imports
+  const carbonFromPeakImport = avgPeakImport * GRID_CARBON_PEAK / 1000;
+  const carbonFromOffpeakImport = avgOffpeakImport * GRID_CARBON_NIGHT / 1000;
+  const totalCarbonImport = carbonFromPeakImport + carbonFromOffpeakImport;
+
+  // Battery carbon: solar charge is clean, grid charge has carbon cost
+  const batteryCleanPercent = (avgSolarCharge + avgGridCharge) > 0
+    ? (avgSolarCharge / (avgSolarCharge + avgGridCharge)) * 100
+    : 100;
+  const carbonFromGridCharge = avgGridCharge * GRID_CARBON_NIGHT / 1000;
+
+  // Net carbon position
+  const netCarbonDaily = totalCarbonImport + carbonFromGridCharge - carbonSavedByExport;
+  const netCarbonAnnual = netCarbonDaily * 365;
+
+  return {
+    gridCarbonDaytime: GRID_CARBON_DAYTIME,
+    gridCarbonNight: GRID_CARBON_NIGHT,
+    gridCarbonPeak: GRID_CARBON_PEAK,
+    avgExport,
+    avgGridCharge,
+    avgSolarCharge,
+    avgPeakImport,
+    avgOffpeakImport,
+    carbonSavedByExport,
+    carbonFromPeakImport,
+    carbonFromOffpeakImport,
+    carbonFromGridCharge,
+    totalCarbonImport,
+    batteryCleanPercent,
+    netCarbonDaily,
+    netCarbonAnnual,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // GENERATE OPTIMAL BATTERY CONFIG
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -3182,9 +3267,58 @@ function main() {
   console.log('  • Does not account for future electricity rate changes');
   console.log('  • Backup power value not included in ROI');
 
-  // Save report
+  // Calculate all data for JSON report
+  const system = stats.systems[0];
+  const sysSn = system?.sysSn ?? 'unknown';
+  // Note: `years` and `savings` already calculated above
+
+  // Generate recommended config for JSON
+  const recommendedConfigResult = generateRecommendedConfig(
+    sysSn,
+    system?.dischargeConfig ?? null,
+    system?.chargeConfig ?? null,
+    analysis,
+    stats
+  );
+
+  // Calculate TOU analysis
+  const estimatedDistribution = { peak: 0.7, shoulder: 0.05, offpeak: 0.25 };
+  const touAnalysisData = {
+    importPercentages: analysis.hasPowerData ? touPercentages(analysis.overall.importByTOU) : null,
+    exportPercentages: analysis.hasPowerData ? touPercentages(analysis.overall.exportByTOU) : null,
+    importCostCalculated: analysis.hasPowerData ? calculateTOUCost(analysis.overall.importByTOU) : null,
+    importCostEstimated: analysis.overall.gridImport * calculateWeightedAvgRate(estimatedDistribution),
+    exportByFeedInPeriod: analysis.hasPowerData ? touPercentages(analysis.overall.exportByFeedInPeriod) : null,
+  };
+
+  // Calculate investment status
+  const investmentStatusData = {
+    panelSunkCost: PANEL_SUNK_COST,
+    batterySunkCost: BATTERY_SUNK_COST,
+    solarSavingsTotal: savings.savingsFromSolar,
+    solarSavingsAnnual: savings.savingsFromSolar / years,
+    solarPaybackYears: PANEL_SUNK_COST > 0 ? PANEL_SUNK_COST / (savings.savingsFromSolar / years) : null,
+    solarRecovered: PANEL_SUNK_COST > 0 ? Math.min(1, savings.savingsFromSolar / PANEL_SUNK_COST) : null,
+    batterySavingsTotal: savings.savingsFromBattery,
+    batterySavingsAnnual: savings.savingsFromBattery / years,
+    batteryPaybackYears: BATTERY_SUNK_COST > 0 && savings.savingsFromBattery > 0
+      ? BATTERY_SUNK_COST / (savings.savingsFromBattery / years)
+      : null,
+    batteryRecovered: BATTERY_SUNK_COST > 0 && savings.savingsFromBattery > 0
+      ? Math.min(1, savings.savingsFromBattery / BATTERY_SUNK_COST)
+      : null,
+  };
+
+  // Save comprehensive report
   const report = {
+    // Metadata
     generatedAt: new Date().toISOString(),
+    sysSn,
+    currentBatteryKwh: analysis.currentBatteryKwh,
+    configuredReservePercent: analysis.configuredReservePercent,
+    hasPowerData: analysis.hasPowerData,
+
+    // Tariff and parameters
     tariff: TARIFF,
     calculatedParameters: {
       efficiency: params.efficiency,
@@ -3193,14 +3327,48 @@ function main() {
       solarChargingHours: params.solarChargingHours,
       estimatedLifespanYears: params.estimatedLifespanYears,
       lifespanConfidence: params.lifespanConfidence,
+      observedMinSoC: params.observedMinSoC,
+      observedMaxSoC: params.observedMaxSoC,
       warnings: params.warnings
     },
     assumptions: { batteryCost: BATTERY_COST, batterySize: BATTERY_SIZE_KWH },
     dateRange: analysis.dateRange,
+
+    // Period analyses
     overall: analysis.overall,
     byYear: Object.fromEntries(analysis.byYear),
     bySeason: Object.fromEntries(analysis.bySeason),
-    scenarios
+    byYearSeason: Object.fromEntries(analysis.byYearSeason),
+
+    // Time-series data
+    daily: analysis.daily,
+
+    // Health tracking
+    batteryEfficiency: analysis.batteryEfficiency,
+    solarDegradation: analysis.solarDegradation,
+
+    // Economic analysis
+    savings,
+    scenarios,
+
+    // Optimization
+    optimizationIssues: generateOptimizationRecommendations(analysis, stats, params),
+
+    // Configuration
+    currentConfig: {
+      discharge: system?.dischargeConfig ?? null,
+      charge: system?.chargeConfig ?? null,
+    },
+    recommendedConfig: recommendedConfigResult.recommendedConfig,
+
+    // TOU analysis
+    touAnalysis: touAnalysisData,
+
+    // Carbon impact
+    carbonImpact: calculateCarbonImpact(analysis),
+
+    // Investment status
+    investmentStatus: investmentStatusData,
   };
 
   const reportFile = `battery-analysis-${new Date().toISOString().split('T')[0]}.json`;
