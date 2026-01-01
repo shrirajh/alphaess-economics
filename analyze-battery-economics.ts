@@ -210,6 +210,24 @@ interface Analysis {
   hasPowerData: boolean;  // Whether we have TOU power data
 }
 
+// Calculated battery parameters from actual data (replaces hardcoded constants)
+interface BatteryParameters {
+  // Calculated from actual data
+  efficiency: number;              // Round-trip efficiency (discharge/charge)
+  usableCapacityPercent: number;   // Observed SoC range (maxSoC - minSoC)
+  maxChargeRateKw: number;         // Observed max charging speed
+  solarChargingHours: number;      // Non-peak daylight hours for solar charging
+  estimatedLifespanYears: number;  // Extrapolated from degradation rate
+
+  // Metadata about data quality
+  efficiencyDays: number;          // Days of data used for efficiency calc
+  socRangeDays: number;            // Days of data used for SoC range calc
+  lifespanConfidence: 'low' | 'medium' | 'high';  // Data confidence for lifespan
+
+  // Warnings/notes
+  warnings: string[];
+}
+
 interface Scenario {
   additionalBatteries: number;
   additionalKwh: number;
@@ -627,6 +645,191 @@ function calculateSolarDegradation(byYearSeason: Map<string, PeriodAnalysis>): S
   };
 }
 
+// Calculate battery parameters from actual data (replaces hardcoded constants)
+function calculateBatteryParameters(analysis: Analysis): BatteryParameters {
+  const warnings: string[] = [];
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 1. BATTERY EFFICIENCY - from batteryEfficiency data
+  // ═══════════════════════════════════════════════════════════════════════════
+  let efficiency = BATTERY_EFFICIENCY; // Default
+  let efficiencyDays = 0;
+
+  if (analysis.batteryEfficiency.length > 0) {
+    // Use weighted average of all periods (weighted by cycle count)
+    let totalCycles = 0;
+    let weightedEfficiency = 0;
+    for (const period of analysis.batteryEfficiency) {
+      weightedEfficiency += period.efficiency * period.cycleCount;
+      totalCycles += period.cycleCount;
+    }
+    if (totalCycles > 0) {
+      efficiency = weightedEfficiency / totalCycles;
+      // Count total days from all periods
+      efficiencyDays = analysis.batteryEfficiency.reduce((sum, p) =>
+        sum + Math.round(p.cycleCount * 10 / (p.discharge / p.charge || 1)), 0);
+      efficiencyDays = analysis.overall.days; // Simpler: use total days
+    }
+    // Sanity check
+    if (efficiency < 0.7 || efficiency > 1.0) {
+      warnings.push(`Calculated efficiency ${(efficiency * 100).toFixed(1)}% seems off, using default`);
+      efficiency = BATTERY_EFFICIENCY;
+    }
+  } else {
+    warnings.push('No efficiency data - using default 90%');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 2. USABLE CAPACITY PERCENT - from SoC range
+  // ═══════════════════════════════════════════════════════════════════════════
+  let usableCapacityPercent = USABLE_CAPACITY_PERCENT; // Default
+  let socRangeDays = 0;
+
+  // Filter days with valid SoC data (maxSoC > 0 means we have power data)
+  const daysWithSoC = analysis.daily.filter(d => d.battery.maxSoC > 0);
+  socRangeDays = daysWithSoC.length;
+
+  if (socRangeDays >= 30) {
+    // Calculate average min and max SoC
+    const avgMinSoC = daysWithSoC.reduce((sum, d) => sum + d.battery.minSoC, 0) / socRangeDays;
+    const avgMaxSoC = daysWithSoC.reduce((sum, d) => sum + d.battery.maxSoC, 0) / socRangeDays;
+
+    // Usable capacity is the range we actually use
+    usableCapacityPercent = (avgMaxSoC - avgMinSoC) / 100;
+
+    // Sanity check
+    if (usableCapacityPercent < 0.3 || usableCapacityPercent > 1.0) {
+      warnings.push(`Calculated usable capacity ${(usableCapacityPercent * 100).toFixed(0)}% seems off, using default`);
+      usableCapacityPercent = USABLE_CAPACITY_PERCENT;
+    }
+  } else if (socRangeDays > 0) {
+    warnings.push(`Only ${socRangeDays} days of SoC data - using default usable capacity`);
+  } else {
+    warnings.push('No SoC data - using default usable capacity 90%');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 3. MAX CHARGE RATE - from solar generation and battery fill speed
+  // ═══════════════════════════════════════════════════════════════════════════
+  let maxChargeRateKw = MAX_CHARGE_RATE_KW; // Default
+
+  if (analysis.daily.length >= 30) {
+    // Estimate from solar charge rate
+    // Days that reached full - use hour reached full and solar charge amount
+    const fullDays = analysis.daily.filter(d =>
+      d.battery.reachedFullSoC && d.battery.hourReachedFull > 0
+    );
+
+    if (fullDays.length >= 10) {
+      // Estimate charge rate from solar charge / hours to full
+      // Assuming charging starts around 9am on average
+      const chargeRates = fullDays.map(d => {
+        const chargingHours = Math.max(1, d.battery.hourReachedFull - 9);
+        return d.battery.chargeFromSolar / chargingHours;
+      }).filter(r => r > 0 && r < 20); // Sanity filter
+
+      if (chargeRates.length >= 5) {
+        // Use 90th percentile to get max sustainable rate
+        chargeRates.sort((a, b) => a - b);
+        const p90Index = Math.floor(chargeRates.length * 0.9);
+        maxChargeRateKw = chargeRates[p90Index] ?? MAX_CHARGE_RATE_KW;
+      }
+    }
+  }
+
+  // Sanity check
+  if (maxChargeRateKw < 1 || maxChargeRateKw > 15) {
+    if (maxChargeRateKw !== MAX_CHARGE_RATE_KW) {
+      warnings.push(`Calculated charge rate ${maxChargeRateKw.toFixed(1)} kW seems off, using default`);
+    }
+    maxChargeRateKw = MAX_CHARGE_RATE_KW;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 4. SOLAR CHARGING HOURS - from tariff (non-peak daylight hours)
+  // ═══════════════════════════════════════════════════════════════════════════
+  const solarDaylightHours = [9, 10, 11, 12, 13, 14, 15]; // Core solar hours
+
+  // Get peak hours from tariff (check all day types)
+  const peakHours = new Set<number>();
+  for (const periods of Object.values(TARIFF.periods)) {
+    for (const period of periods) {
+      if (period.name === 'peak') {
+        for (const hour of period.hours) {
+          peakHours.add(hour);
+        }
+      }
+    }
+  }
+
+  // Solar charging hours = daylight hours that are NOT peak
+  const nonPeakSolarHours = solarDaylightHours.filter(h => !peakHours.has(h));
+  const solarChargingHours = nonPeakSolarHours.length > 0 ? nonPeakSolarHours.length : SHOULDER_HOURS;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 5. ESTIMATED LIFESPAN - from degradation rate
+  // ═══════════════════════════════════════════════════════════════════════════
+  let estimatedLifespanYears = BATTERY_LIFESPAN_YEARS; // Default
+  let lifespanConfidence: 'low' | 'medium' | 'high' = 'low';
+  const yearsOfData = analysis.overall.days / 365;
+
+  if (analysis.batteryEfficiency.length >= 4) {
+    // We have at least 4 quarters of data - can estimate degradation
+    const sorted = [...analysis.batteryEfficiency].sort((a, b) => a.period.localeCompare(b.period));
+
+    if (sorted.length >= 4) {
+      const firstHalf = sorted.slice(0, Math.floor(sorted.length / 2));
+      const secondHalf = sorted.slice(Math.floor(sorted.length / 2));
+
+      const avgFirst = firstHalf.reduce((s, p) => s + p.efficiency, 0) / firstHalf.length;
+      const avgSecond = secondHalf.reduce((s, p) => s + p.efficiency, 0) / secondHalf.length;
+
+      // Calculate years between first and second half midpoints
+      const yearsBetweenHalves = yearsOfData / 2;
+
+      if (yearsBetweenHalves > 0.25 && avgFirst > avgSecond) {
+        // Calculate annual degradation rate
+        const annualDegradation = (avgFirst - avgSecond) / yearsBetweenHalves;
+
+        // End of life at 70% of original efficiency
+        const endOfLifeEfficiency = 0.70;
+        const currentEfficiency = avgSecond;
+
+        if (annualDegradation > 0.001) {
+          const yearsRemaining = (currentEfficiency - endOfLifeEfficiency) / annualDegradation;
+          estimatedLifespanYears = Math.min(20, Math.max(5, yearsRemaining + yearsOfData));
+
+          lifespanConfidence = yearsOfData >= 2 ? 'medium' : 'low';
+          if (yearsOfData >= 3 && sorted.length >= 8) {
+            lifespanConfidence = 'high';
+          }
+        }
+      } else if (avgSecond >= avgFirst) {
+        // No degradation observed
+        warnings.push('No degradation detected yet - using default lifespan');
+      }
+
+      if (yearsOfData < 1) {
+        warnings.push(`Only ${(yearsOfData * 12).toFixed(0)} months of data - lifespan estimate may be inaccurate`);
+      }
+    }
+  } else {
+    warnings.push('Insufficient efficiency history - using default lifespan');
+  }
+
+  return {
+    efficiency,
+    usableCapacityPercent,
+    maxChargeRateKw,
+    solarChargingHours,
+    estimatedLifespanYears,
+    efficiencyDays,
+    socRangeDays,
+    lifespanConfidence,
+    warnings
+  };
+}
+
 function calculatePeriodAnalysis(totals: PeriodTotals): PeriodAnalysis {
   const days = totals.days || 1;
   const avgDaily = {
@@ -929,12 +1132,19 @@ function analyzeHistoricalData(stats: Stats): Analysis {
 // MODEL BATTERY SCENARIOS
 // ═══════════════════════════════════════════════════════════════════════════
 
-function modelBatteryScenarios(analysis: Analysis): Scenario[] {
+function modelBatteryScenarios(analysis: Analysis, params?: BatteryParameters): Scenario[] {
+  // Use calculated params or fall back to defaults
+  const efficiency = params?.efficiency ?? BATTERY_EFFICIENCY;
+  const usableCapacity = params?.usableCapacityPercent ?? USABLE_CAPACITY_PERCENT;
+  const maxChargeRate = params?.maxChargeRateKw ?? MAX_CHARGE_RATE_KW;
+  const solarHours = params?.solarChargingHours ?? SHOULDER_HOURS;
+  const lifespanYears = params?.estimatedLifespanYears ?? BATTERY_LIFESPAN_YEARS;
+
   const scenarios: Scenario[] = [];
   const currentBatteryKwh = analysis.currentBatteryKwh;
 
-  // Max energy that can be captured in a day based on charge rate and shoulder hours
-  const maxDailyCharge = MAX_CHARGE_RATE_KW * SHOULDER_HOURS;
+  // Max energy that can be captured in a day based on charge rate and solar hours
+  const maxDailyCharge = maxChargeRate * solarHours;
 
   // Get tariff rates for value calculations
   const peakRate = getRateForPeriod('peak');
@@ -947,7 +1157,7 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
   for (let additionalBatteries = 0; additionalBatteries <= 3; additionalBatteries++) {
     const additionalKwh = additionalBatteries * BATTERY_SIZE_KWH;
     const totalBatteryKwh = currentBatteryKwh + additionalKwh;
-    const additionalUsableKwh = additionalKwh * USABLE_CAPACITY_PERCENT;
+    const additionalUsableKwh = additionalKwh * usableCapacity;
 
     let totalSolarArbValue = 0;
     let totalGridArbValue = 0;
@@ -980,11 +1190,11 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
         additionalUsableKwh,
         Math.max(0, day.gridExport),
         maxDailyCharge,
-        maxUsefulDischarge / BATTERY_EFFICIENCY
+        maxUsefulDischarge / efficiency
       );
 
       if (solarCapturable > 0) {
-        const solarDischargeable = solarCapturable * BATTERY_EFFICIENCY;
+        const solarDischargeable = solarCapturable * efficiency;
 
         // Discharge to afternoon peak first, then shoulder
         let afternoonPeakDischarge: number;
@@ -1020,7 +1230,7 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
 
       // Solar discharge primarily serves AFTERNOON peak (solar is available then)
       // Morning peak (6-10am) is before significant solar, so it's fully available for grid arbitrage
-      const solarDischarge = solarCapturable > 0 ? solarCapturable * BATTERY_EFFICIENCY : 0;
+      const solarDischarge = solarCapturable > 0 ? solarCapturable * efficiency : 0;
       const afternoonPeakRemaining = Math.max(0, day.afternoonPeakImport - solarDischarge);
       const peakImportRemaining = hasTOUData
         ? day.morningPeakImport + afternoonPeakRemaining  // Morning peak unaffected by solar
@@ -1034,11 +1244,11 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
       // Grid chargeable = min(remaining capacity, peak import remaining)
       const gridChargeable = Math.min(
         capacityForGridCharge,
-        peakImportRemaining / BATTERY_EFFICIENCY
+        peakImportRemaining / efficiency
       );
 
       if (gridChargeable > 0) {
-        const gridDischargeable = gridChargeable * BATTERY_EFFICIENCY;
+        const gridDischargeable = gridChargeable * efficiency;
 
         // Grid arbitrage value = (peak rate - offpeak rate) × discharge amount
         // We charge at off-peak, discharge at peak
@@ -1058,7 +1268,7 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
     const annualSavings = annualSolarArb + annualGridArb;
     const investment = additionalBatteries * BATTERY_COST;
     const paybackYears = investment > 0 && annualSavings > 0 ? investment / annualSavings : Infinity;
-    const lifetimeSavings = annualSavings * BATTERY_LIFESPAN_YEARS;
+    const lifetimeSavings = annualSavings * lifespanYears;
     const roi = investment > 0 ? ((lifetimeSavings - investment) / investment * 100) : 0;
 
     scenarios.push({
@@ -1502,11 +1712,13 @@ interface OptimizationIssue {
   howToFix: string[];
 }
 
-function generateOptimizationRecommendations(analysis: Analysis): OptimizationIssue[] {
+function generateOptimizationRecommendations(analysis: Analysis, params?: BatteryParameters): OptimizationIssue[] {
   const issues: OptimizationIssue[] = [];
   const peakRate = getRateForPeriod('peak');
   const offpeakRate = getRateForPeriod('offpeak');
   const feedInRate = TARIFF.feedInTariff;
+  const efficiency = params?.efficiency ?? BATTERY_EFFICIENCY;
+  const usableCapacity = params?.usableCapacityPercent ?? USABLE_CAPACITY_PERCENT;
 
   // Get peak hours from tariff for recommendations
   const peakHours = TARIFF.periods?.everyday?.find((p: { name: string }) => p.name === 'peak')?.hours as number[] | undefined;
@@ -1641,7 +1853,7 @@ function generateOptimizationRecommendations(analysis: Analysis): OptimizationIs
   // Issue 4: Missed solar capture (exporting while battery has capacity)
   const avgExport = analysis.overall.gridExport / analysis.overall.days;
   const avgSolarCharge = analysis.overall.chargeFromSolar / analysis.overall.days;
-  const batteryCapacity = analysis.currentBatteryKwh * USABLE_CAPACITY_PERCENT;
+  const batteryCapacity = analysis.currentBatteryKwh * usableCapacity;
 
   // Analyze battery "reaching full" behavior across all days
   const daysReachedFull = analysis.daily.filter(d => d.battery.reachedFullSoC).length;
@@ -1677,7 +1889,7 @@ function generateOptimizationRecommendations(analysis: Analysis): OptimizationIs
         const solarChargeRate = avgSolarCharge / hoursToFill;  // kWh per hour
 
         // With +10kWh battery, how much later would it fill?
-        const additionalCapacity = BATTERY_SIZE_KWH * USABLE_CAPACITY_PERCENT;
+        const additionalCapacity = BATTERY_SIZE_KWH * usableCapacity;
         const additionalHoursToFill = solarChargeRate > 0 ? additionalCapacity / solarChargeRate : 0;
         const newFillHour = avgHourReachedFull + additionalHoursToFill;
 
@@ -1692,15 +1904,15 @@ function generateOptimizationRecommendations(analysis: Analysis): OptimizationIs
         const additionalSolarCapture = Math.min(
           avgExportAfterFull,
           additionalCapacity,
-          maxUsefulDischarge / BATTERY_EFFICIENCY  // Can only store what you can usefully discharge
+          maxUsefulDischarge / efficiency  // Can only store what you can usefully discharge
         );
 
         // Value = what we save on peak import - what we lose on feed-in
-        const dischargeable = additionalSolarCapture * BATTERY_EFFICIENCY;
+        const dischargeable = additionalSolarCapture * efficiency;
         const captureValue = (dischargeable * peakRate - additionalSolarCapture * feedInRate) * 365;
 
         // Get the actual modeled value from scenarios (more accurate than avg calculation)
-        const scenarios = modelBatteryScenarios(analysis);
+        const scenarios = modelBatteryScenarios(analysis, params);
         const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
         const modeledSolarArb = plusOneBattery?.solarArbitrageValue ?? 0;
         const modeledGridArb = plusOneBattery?.gridArbitrageValue ?? 0;
@@ -1818,8 +2030,8 @@ function generateOptimizationRecommendations(analysis: Analysis): OptimizationIs
   return issues;
 }
 
-function printOptimizationRecommendations(analysis: Analysis): void {
-  const issues = generateOptimizationRecommendations(analysis);
+function printOptimizationRecommendations(analysis: Analysis, params?: BatteryParameters): void {
+  const issues = generateOptimizationRecommendations(analysis, params);
 
   if (issues.length === 0) {
     console.log('\n✅ BATTERY OPTIMIZATION');
@@ -1861,7 +2073,7 @@ function printOptimizationRecommendations(analysis: Analysis): void {
 
   // Calculate what a new battery would add - use the same logic as modelBatteryScenarios
   // Get the pre-calculated scenario value for consistency
-  const scenarios = modelBatteryScenarios(analysis);
+  const scenarios = modelBatteryScenarios(analysis, params);
   const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
   const newBatteryAnnual = plusOneBattery ? plusOneBattery.annualSavings : 0;
 
@@ -2001,6 +2213,9 @@ function main() {
     process.exit(1);
   }
 
+  // Calculate battery parameters from actual data
+  const params = calculateBatteryParameters(analysis);
+
   // Rates
   console.log('\n📊 TARIFF: ' + TARIFF.name);
   console.log('─'.repeat(60));
@@ -2031,6 +2246,33 @@ function main() {
   console.log(`  Date Range:                  ${analysis.dateRange.start} to ${analysis.dateRange.end}`);
   console.log(`  Total Days Analyzed:         ${analysis.overall.days}`);
   console.log(`  Current Battery:             ${analysis.currentBatteryKwh} kWh`);
+
+  // Calculated battery parameters
+  console.log('\n📊 SYSTEM PARAMETERS (calculated from your data)');
+  console.log('─'.repeat(60));
+  const effSource = params.efficiencyDays > 0
+    ? `from ${params.efficiencyDays} days of data`
+    : 'default (no data)';
+  console.log(`  Round-trip efficiency:       ${(params.efficiency * 100).toFixed(1)}% (${effSource})`);
+
+  const socSource = params.socRangeDays > 0
+    ? `observed SoC range over ${params.socRangeDays} days`
+    : 'default (no SoC data)';
+  console.log(`  Usable capacity:             ${(params.usableCapacityPercent * 100).toFixed(0)}% (${socSource})`);
+
+  console.log(`  Max charge rate:             ${params.maxChargeRateKw.toFixed(1)} kW`);
+  console.log(`  Solar charging window:       ${params.solarChargingHours} hours (non-peak daylight)`);
+
+  const lifespanIcon = params.lifespanConfidence === 'high' ? '✓' :
+    params.lifespanConfidence === 'medium' ? '~' : '⚠️';
+  console.log(`  Estimated lifespan:          ${lifespanIcon} ${params.estimatedLifespanYears.toFixed(1)} years (${params.lifespanConfidence} confidence)`);
+
+  if (params.warnings.length > 0) {
+    console.log('  Notes:');
+    for (const warning of params.warnings) {
+      console.log(`    • ${warning}`);
+    }
+  }
 
   // Overall totals
   console.log('\n📊 LIFETIME TOTALS');
@@ -2119,7 +2361,7 @@ function main() {
   // Battery Utilization Report (Phase 2: Ground truth from power data)
   if (analysis.hasPowerData) {
     printBatteryUtilizationReport(analysis);
-    printOptimizationRecommendations(analysis);
+    printOptimizationRecommendations(analysis, params);
   }
 
   // Battery Efficiency / Degradation
@@ -2307,8 +2549,8 @@ function main() {
     } else if (batteryAnnualSavings > 0) {
       console.log(`  ⏳ BATTERY: $${fmt(batteryPaybackSoFar, 0)} recovered of $${fmt(BATTERY_SUNK_COST, 0)} (${fmt(batteryPaybackSoFar / BATTERY_SUNK_COST * 100, 0)}%)`);
       console.log(`     Est. payback in ${fmt(batteryYearsToPayback, 1)} years total (${fmt(batteryRemaining / batteryAnnualSavings, 1)} more years)`);
-      if (batteryYearsToPayback > BATTERY_LIFESPAN_YEARS) {
-        console.log(`     ⚠️  Warning: Payback exceeds expected ${BATTERY_LIFESPAN_YEARS}-year lifespan`);
+      if (batteryYearsToPayback > params.estimatedLifespanYears) {
+        console.log(`     ⚠️  Warning: Payback exceeds expected ${params.estimatedLifespanYears.toFixed(1)}-year lifespan`);
       }
     } else {
       console.log(`  ❌ BATTERY: No measurable savings yet (battery may be too small or usage pattern doesn't suit)`);
@@ -2341,20 +2583,20 @@ function main() {
     }
   }
 
-  // Battery scenarios
-  const scenarios = modelBatteryScenarios(analysis);
+  // Battery scenarios (using calculated parameters)
+  const scenarios = modelBatteryScenarios(analysis, params);
 
   console.log('\n🔋 BATTERY INVESTMENT ANALYSIS');
   console.log('─'.repeat(60));
   console.log(`  Battery cost assumption:     $${BATTERY_COST} per ${BATTERY_SIZE_KWH}kWh`);
-  console.log(`  Assumed lifespan:            ${BATTERY_LIFESPAN_YEARS} years`);
-  console.log(`  Round-trip efficiency:       ${(BATTERY_EFFICIENCY * 100).toFixed(0)}%`);
+  console.log(`  Calculated lifespan:         ${params.estimatedLifespanYears.toFixed(1)} years (${params.lifespanConfidence} confidence)`);
+  console.log(`  Calculated efficiency:       ${(params.efficiency * 100).toFixed(1)}%`);
   const highestRate = getHighestRatePeriod();
   // For TOU feed-in, use lowest feed-in rate (solar typically captured during midday)
   const lowestFeedIn = hasTOUFeedIn()
     ? getFeedInPeriodsByRate()[getFeedInPeriodsByRate().length - 1]?.rate ?? TARIFF.feedInTariff
     : TARIFF.feedInTariff;
-  console.log(`  Max arbitrage value:         $${((highestRate.rate - lowestFeedIn) * BATTERY_EFFICIENCY).toFixed(4)}/kWh (${highestRate.name})`);
+  console.log(`  Max arbitrage value:         $${((highestRate.rate - lowestFeedIn) * params.efficiency).toFixed(4)}/kWh (${highestRate.name})`);
 
   console.log('\n📊 SCENARIO COMPARISON (with grid arbitrage)');
   console.log('═'.repeat(100));
@@ -2410,7 +2652,7 @@ function main() {
     console.log(`\n  Based on ${analysis.overall.days} days of data across ${analysis.byYear.size} year(s):`);
     console.log(`  ✅ Adding ${bestScenario.additionalBatteries}x ${BATTERY_SIZE_KWH}kWh battery could be worthwhile`);
     console.log(`  💵 Estimated payback period: ${fmt(bestScenario.paybackYears, 1)} years`);
-    console.log(`  📈 Estimated ROI over ${BATTERY_LIFESPAN_YEARS} years: ${fmt(bestScenario.roi, 1)}%`);
+    console.log(`  📈 Estimated ROI over ${params.estimatedLifespanYears.toFixed(1)} years: ${fmt(bestScenario.roi, 1)}%`);
 
     // Seasonal insight
     const summer = analysis.bySeason.get('summer');
@@ -2451,7 +2693,16 @@ function main() {
   const report = {
     generatedAt: new Date().toISOString(),
     tariff: TARIFF,
-    assumptions: { batteryCost: BATTERY_COST, batterySize: BATTERY_SIZE_KWH, lifespanYears: BATTERY_LIFESPAN_YEARS, efficiency: BATTERY_EFFICIENCY },
+    calculatedParameters: {
+      efficiency: params.efficiency,
+      usableCapacityPercent: params.usableCapacityPercent,
+      maxChargeRateKw: params.maxChargeRateKw,
+      solarChargingHours: params.solarChargingHours,
+      estimatedLifespanYears: params.estimatedLifespanYears,
+      lifespanConfidence: params.lifespanConfidence,
+      warnings: params.warnings
+    },
+    assumptions: { batteryCost: BATTERY_COST, batterySize: BATTERY_SIZE_KWH },
     dateRange: analysis.dateRange,
     overall: analysis.overall,
     byYear: Object.fromEntries(analysis.byYear),
