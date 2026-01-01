@@ -702,14 +702,38 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
     let totalCaptured = 0;
 
     for (const day of analysis.daily) {
+      // Calculate max useful discharge first - don't capture more than you can use
+      // Only afternoon peak and shoulder imports can be offset by same-day solar
+      const hasTOUData = day.peakImport > 0 || day.shoulderImport > 0 || day.offpeakImport > 0;
+      let maxUsefulDischarge: number;
+
+      if (hasTOUData) {
+        maxUsefulDischarge = day.afternoonPeakImport + day.shoulderImport;
+      } else {
+        // Fall back: estimate useful discharge from total import
+        const afternoonPeakRatio = 0.71;
+        const overallPeakRatio = analysis.hasPowerData
+          ? analysis.overall.importByTOU.peak / (analysis.overall.gridImport || 1)
+          : 0.70;
+        const shoulderRatio = analysis.hasPowerData
+          ? analysis.overall.importByTOU.shoulder / (analysis.overall.gridImport || 1)
+          : 0.05;
+        maxUsefulDischarge = day.gridImport * (overallPeakRatio * afternoonPeakRatio + shoulderRatio);
+      }
+
+      // Max capture = max useful discharge / efficiency (need to charge more than you discharge)
+      const maxUsefulCapture = maxUsefulDischarge / BATTERY_EFFICIENCY;
+
       // How much can we capture? Limited by:
       // 1. Battery capacity (usable)
       // 2. Available export (solar excess)
       // 3. Charge rate × available charging hours (shoulder period)
+      // 4. What we can actually usefully discharge (don't capture more than we can use)
       const capturable = Math.min(
         additionalUsableKwh,
         Math.max(0, day.gridExport),
-        maxDailyCharge
+        maxDailyCharge,
+        maxUsefulCapture
       );
       if (capturable <= 0) continue;
 
@@ -719,8 +743,6 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
       // Use ACTUAL TOU data: discharge during AFTERNOON peak only (not morning peak)
       // Morning peak (6-10am) happens BEFORE solar production, so we can't use same-day
       // solar to serve morning peak. Only afternoon/evening peak (3pm-1am) is serviceable.
-      const hasTOUData = day.peakImport > 0 || day.shoulderImport > 0 || day.offpeakImport > 0;
-
       let afternoonPeakDischarge: number;
       let shoulderDischarge: number;
 
@@ -736,9 +758,13 @@ function modelBatteryScenarios(analysis: Analysis): Scenario[] {
         const overallPeakRatio = analysis.hasPowerData
           ? analysis.overall.importByTOU.peak / (analysis.overall.gridImport || 1)
           : 0.70;
+        const shoulderRatio = analysis.hasPowerData
+          ? analysis.overall.importByTOU.shoulder / (analysis.overall.gridImport || 1)
+          : 0.05;
         const estimatedAfternoonPeak = day.gridImport * overallPeakRatio * afternoonPeakRatio;
+        const estimatedShoulder = day.gridImport * shoulderRatio;
         afternoonPeakDischarge = Math.min(dischargeable, estimatedAfternoonPeak);
-        shoulderDischarge = 0;  // Conservative: don't assume shoulder value without data
+        shoulderDischarge = Math.min(dischargeable - afternoonPeakDischarge, estimatedShoulder);
       }
 
       // Calculate value: stored solar would have been exported at feed-in rate
