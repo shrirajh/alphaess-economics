@@ -16,6 +16,9 @@ interface CliArgs {
   cacheDir: string;
   force: boolean;
   excludeConditions: boolean;
+  currentTariff?: string;  // Path to current tariff JSON for comparison
+  save: boolean;           // Save top N as JSON files
+  outputDir: string;       // Directory to save JSON files
 }
 
 function parseArgs(): CliArgs {
@@ -26,6 +29,9 @@ function parseArgs(): CliArgs {
     verbose: false,
     cacheDir: './cache',
     force: false,
+    excludeConditions: false,
+    save: false,
+    outputDir: './tariffs',
   };
 
   for (const arg of args) {
@@ -39,6 +45,15 @@ function parseArgs(): CliArgs {
       result.verbose = true;
     } else if (arg === '--force' || arg === '-f') {
       result.force = true;
+    } else if (arg === '--exclude-conditions' || arg === '--no-conditions') {
+      result.excludeConditions = true;
+    } else if (arg.startsWith('--current=')) {
+      result.currentTariff = arg.slice(10);
+    } else if (arg === '--save') {
+      result.save = true;
+    } else if (arg.startsWith('--output=')) {
+      result.outputDir = arg.slice(9);
+      result.save = true;  // Implies --save
     } else if (arg.startsWith('--cache=')) {
       result.cacheDir = arg.slice(8);
     } else if (arg === '--help' || arg === '-h') {
@@ -62,8 +77,12 @@ Required:
 Options:
   --top=N             Show top N cheapest plans (default: 10)
   --sn=SERIAL         System serial number (if multiple systems)
+  --current=FILE      Compare against current tariff JSON file
+  --save              Save top N plans as JSON tariff files
+  --output=DIR        Output directory for saved tariffs (default: ./tariffs)
   --cache=DIR         Cache directory (default: ./cache)
   --force, -f         Force recalculation (ignore cache)
+  --exclude-conditions  Exclude plans with eligibility conditions
   --verbose, -v       Show detailed output
   --help, -h          Show this help
 
@@ -960,16 +979,64 @@ async function main(): Promise<void> {
 
   console.log(`\nAnalyzed ${costs.length} plans (${calcCacheHits} calc cached, ${detailCacheHits} detail cached, ${apiFetches} fetched, ${errors} errors)`);
 
-  if (costs.length === 0) {
+  // Filter out plans with restrictive conditions if requested
+  let filteredCosts = costs;
+  if (args.excludeConditions) {
+    // Keywords that indicate restrictive conditions you can't meet
+    // Note: Solar/battery conditions are NOT excluded since user has them
+    const restrictiveKeywords = [
+      'new customer', 'new agl', 'new to',   // New customers only
+      'existing customer', 'existing agl',   // Existing customers only
+      'seniors card', 'concession',          // Special cards required
+      'velocity', 'flybuys', 'rewards',      // Membership required
+      'westpac', 'commbank', 'anz', 'nab',   // Bank partnership
+      'bp rewards', 'ampol',                 // Fuel partnership
+      'direct debit only',                   // Payment method required
+      'greenpower',                          // GreenPower requirement (costs extra)
+    ];
+
+    filteredCosts = costs.filter(c => {
+      // Check if any condition contains restrictive keywords
+      const hasRestrictive = c.conditions.some(cond => {
+        const info = cond.info.toLowerCase();
+        return restrictiveKeywords.some(kw => info.includes(kw));
+      });
+      return !hasRestrictive;
+    });
+
+    const excluded = costs.length - filteredCosts.length;
+    console.log(`Excluded ${excluded} plans with restrictive conditions (${filteredCosts.length} remaining)`);
+  }
+
+  if (filteredCosts.length === 0) {
     console.error('No valid plans could be analyzed.');
     process.exit(1);
   }
 
   // Sort by net cost (ascending)
-  costs.sort((a, b) => a.netCost - b.netCost);
+  filteredCosts.sort((a, b) => a.netCost - b.netCost);
+
+  // Calculate current plan cost if specified
+  let currentPlanCost: PlanCost | null = null;
+  if (args.currentTariff) {
+    try {
+      const currentTariff = JSON.parse(fs.readFileSync(args.currentTariff, 'utf8')) as Tariff;
+      const parsed: ParsedPlanResult = {
+        tariff: currentTariff,
+        conditions: [],
+        fees: [],
+        effectiveFrom: undefined,
+      };
+      currentPlanCost = calculatePlanCost(parsed, usage, 'CURRENT', 'current', currentTariff.provider ?? 'Current Plan');
+      console.log(`\nCurrent plan: ${currentTariff.name} (${currentTariff.provider})`);
+      console.log(`Current cost: $${currentPlanCost.netCost.toFixed(2)} ($${currentPlanCost.annualizedCost.toFixed(0)}/year)`);
+    } catch (e) {
+      console.error(`Warning: Could not load current tariff: ${e}`);
+    }
+  }
 
   // Display top N
-  const topN = costs.slice(0, args.top);
+  const topN = filteredCosts.slice(0, args.top);
 
   console.log(`\n${'═'.repeat(80)}`);
   console.log(`TOP ${args.top} CHEAPEST PLANS FOR POSTCODE ${args.postcode}`);
@@ -1029,21 +1096,61 @@ async function main(): Promise<void> {
   }
 
   // Savings comparison
-  if (topN.length >= 2) {
-    const cheapest = topN[0]!;
+  console.log(`\n${'═'.repeat(80)}`);
+  console.log('POTENTIAL SAVINGS');
+  console.log(`${'═'.repeat(80)}`);
+
+  const cheapest = topN[0]!;
+
+  if (currentPlanCost) {
+    const savingsVsCurrent = currentPlanCost.annualizedCost - cheapest.annualizedCost;
+    if (savingsVsCurrent > 0) {
+      console.log(`🎉 Switching to "${cheapest.planName}" saves ~$${savingsVsCurrent.toFixed(0)}/year vs your current plan!`);
+    } else if (savingsVsCurrent < 0) {
+      console.log(`✓ Your current plan is already $${(-savingsVsCurrent).toFixed(0)}/year cheaper than the best available!`);
+    } else {
+      console.log(`Your current plan costs the same as the best available.`);
+    }
+    console.log(`\nCurrent: $${currentPlanCost.annualizedCost.toFixed(0)}/year → Best: $${cheapest.annualizedCost.toFixed(0)}/year`);
+  } else if (topN.length >= 2) {
     const second = topN[1]!;
     const savings = second.annualizedCost - cheapest.annualizedCost;
-
-    console.log(`\n${'═'.repeat(80)}`);
-    console.log('POTENTIAL SAVINGS');
-    console.log(`${'═'.repeat(80)}`);
     console.log(`Switching to "${cheapest.planName}" saves ~$${savings.toFixed(0)}/year vs #2`);
   }
 
-  // Convert command hint
-  console.log(`\n${'─'.repeat(80)}`);
-  console.log('To save a plan as a tariff file for calculate-bill.ts:');
-  console.log(`  npx tsx tariff-scraper.ts convert --retailer=${topN[0]?.retailerCode} --plan-id="${topN[0]?.planId}"`);
+  // Save top N as JSON files if requested
+  if (args.save) {
+    if (!fs.existsSync(args.outputDir)) {
+      fs.mkdirSync(args.outputDir, { recursive: true });
+    }
+
+    console.log(`\n${'═'.repeat(80)}`);
+    console.log('SAVING TARIFF FILES');
+    console.log(`${'═'.repeat(80)}`);
+
+    for (let i = 0; i < topN.length; i++) {
+      const c = topN[i]!;
+      // Create safe filename: retailer-planname-state.json
+      const safeName = (str: string) => str.toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 30);
+
+      const filename = `${safeName(c.retailer)}-${safeName(c.planName)}-${c.tariff.state?.toLowerCase() ?? 'au'}.json`;
+      const filepath = path.join(args.outputDir, filename);
+
+      fs.writeFileSync(filepath, JSON.stringify(c.tariff, null, 2));
+      console.log(`  #${i + 1}: ${filepath}`);
+    }
+
+    console.log(`\nSaved ${topN.length} tariff files to ${args.outputDir}/`);
+  } else {
+    // Convert command hint
+    console.log(`\n${'─'.repeat(80)}`);
+    console.log('To save a plan as a tariff file for calculate-bill.ts:');
+    console.log(`  npx tsx tariff-scraper.ts convert --retailer=${topN[0]?.retailerCode} --plan-id="${topN[0]?.planId}"`);
+    console.log(`Or use --save to save top ${args.top} plans as JSON files`);
+  }
 }
 
 main().catch(error => {
