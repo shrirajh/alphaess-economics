@@ -125,7 +125,22 @@ Options: `--force` to refresh cache, `--limit=10` for first N retailers.
 npx tsx compare-plans.ts --postcode=3000 --top=10
 ```
 
-Ranks plans by actual cost using your usage data. Options: `--save` to save top plans as JSON, `--exclude-conditions` to skip plans with special requirements.
+Ranks plans by actual cost using your usage data.
+
+Options:
+- `--postcode=XXXX` - Your postcode (required)
+- `--top=N` - Show top N cheapest plans (default: 10)
+- `--sn=SERIAL` - System serial number (if multiple systems)
+- `--current=FILE` - Compare against your current tariff JSON
+- `--save` - Save top N plans as JSON tariff files
+- `--output=DIR` - Output directory for saved tariffs (default: ./tariffs)
+- `--cache=DIR` - Cache directory (default: ./cache)
+- `--force` - Force recalculation (ignore cache)
+- `--exclude-conditions` - Exclude plans with eligibility conditions
+- `--exclude-vpp` - Exclude plans requiring VPP enrollment
+- `--allow-no-life-support` - Include plans that exclude life support customers
+- `--allow-high-income` - Include plans requiring high income ($100k+)
+- `--verbose` - Show detailed output
 
 ### Workflow: find a cheaper plan
 
