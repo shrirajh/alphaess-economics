@@ -1950,9 +1950,16 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
   if (avgExport > 2 && avgSolarCharge < batteryCapacity * 0.7) {
     // Significant export but battery not fully utilizing solar
     const potentialCapture = Math.min(avgExport, batteryCapacity - avgSolarCharge);
-    const annualValue = potentialCapture * 365 * (peakRate - feedInRate);
 
-    if (annualValue > 50) {
+    // Get the MODELED value (accounts for daily variation, efficiency, useful discharge limits)
+    const scenarios = modelBatteryScenarios(analysis, params);
+    const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
+    const modeledAnnualValue = plusOneBattery?.annualSavings ?? 0;
+    const modeledSolarArb = plusOneBattery?.solarArbitrageValue ?? 0;
+    const modeledGridArb = plusOneBattery?.gridArbitrageValue ?? 0;
+    const modeledPayback = plusOneBattery?.paybackYears ?? Infinity;
+
+    if (modeledAnnualValue > 50) {
       // Build data-driven how-to-fix based on actual battery behavior
       const howToFix: string[] = [];
 
@@ -1986,13 +1993,6 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
           maxUsefulDischarge / efficiency  // Can only store what you can usefully discharge
         );
 
-        // Get the actual modeled value from scenarios (more accurate than avg calculation)
-        const scenarios = modelBatteryScenarios(analysis, params);
-        const plusOneBattery = scenarios.find(s => s.additionalBatteries === 1);
-        const modeledSolarArb = plusOneBattery?.solarArbitrageValue ?? 0;
-        const modeledGridArb = plusOneBattery?.gridArbitrageValue ?? 0;
-        const modeledTotal = plusOneBattery?.annualSavings ?? 0;
-
         howToFix.push('');
         howToFix.push('  📊 MODELING: What if you had MORE battery capacity?');
         howToFix.push(`     Current ${fmt(batteryCapacity, 0)}kWh fills at ~${hourFormatted}`);
@@ -2014,13 +2014,13 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
           howToFix.push(`     ACTUAL MODELED VALUE (day-by-day calculation):`);
           howToFix.push(`        → Solar arbitrage: $${fmt(modeledSolarArb, 0)}/year`);
           howToFix.push(`        → Grid arbitrage:  $${fmt(modeledGridArb, 0)}/year`);
-          howToFix.push(`        → TOTAL:           $${fmt(modeledTotal, 0)}/year`);
-          howToFix.push(`        → Payback:         ${fmt(BATTERY_COST / modeledTotal, 1)} years ($${BATTERY_COST} cost)`);
+          howToFix.push(`        → TOTAL:           $${fmt(modeledAnnualValue, 0)}/year`);
+          howToFix.push(`        → Payback:         ${fmt(modeledPayback, 1)} years ($${BATTERY_COST} cost)`);
         } else {
           howToFix.push(`     With +${BATTERY_SIZE_KWH}kWh: Would NOT reach 100% on most days`);
           howToFix.push(`        → Solar arbitrage: $${fmt(modeledSolarArb, 0)}/year`);
           howToFix.push(`        → Grid arbitrage:  $${fmt(modeledGridArb, 0)}/year`);
-          howToFix.push(`        → TOTAL:           $${fmt(modeledTotal, 0)}/year`);
+          howToFix.push(`        → TOTAL:           $${fmt(modeledAnnualValue, 0)}/year`);
         }
 
         if (avgHourReachedFull < 12) {
@@ -2094,7 +2094,7 @@ function generateOptimizationRecommendations(analysis: Analysis, stats: Stats, p
         category: 'hardware',
         issue: `Exporting ${fmt(avgExport, 1)} kWh/day while battery only captures ${fmt(avgSolarCharge, 1)} kWh/day from solar`,
         impact: `Could store more solar instead of exporting at low feed-in rate ($${fmt(feedInRate, 2)}/kWh)`,
-        annualValue: annualValue,
+        annualValue: modeledAnnualValue,
         howToFix
       });
     }
